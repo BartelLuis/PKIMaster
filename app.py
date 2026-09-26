@@ -96,10 +96,12 @@ def _split_pem_crl_blocks(pem: str, *, strict: bool = True) -> list[str]:
     lines = pem.splitlines(keepends=True)
     position = 0
     while position < len(lines):
-        while position < len(lines) and (
-            not lines[position].strip() or (not strict and lines[position].strip() != begin)
-        ):
-            position += 1
+        if strict:
+            while position < len(lines) and not lines[position].strip():
+                position += 1
+        else:
+            while position < len(lines) and lines[position].strip() != begin:
+                position += 1
         if position >= len(lines):
             break
         if lines[position].strip() != begin:
@@ -125,6 +127,8 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
     try:
         chain = x509.load_pem_x509_certificates((authority["certificate_pem"] + authority["parent_chain_pem"]).encode())
         blocks = _split_pem_crl_blocks(pem)
+        if not blocks:
+            raise ValueError("Upload only PEM-encoded parent CRLs.")
         crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
         if len(chain) < 2 or len(crls) != len(chain) - 1:
             raise ValueError("Provide one full CRL per parent, ordered immediate issuer to root.")
