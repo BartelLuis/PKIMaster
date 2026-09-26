@@ -576,16 +576,23 @@ def create_app(test_config: dict | None = None) -> Flask:
     instance_path = Path(test_config["INSTANCE_PATH"]) if test_config and "INSTANCE_PATH" in test_config else Path("instance")
     instance_path.mkdir(parents=True, exist_ok=True)
     app.config.update(
-        SECRET_KEY=os.environ.get("PKIMASTER_SECRET_KEY", "dev-only-change-me"),
+        SECRET_KEY=os.environ.get("PKIMASTER_SECRET_KEY", ""),
         DATABASE=os.environ.get("PKIMASTER_DB_PATH", str(instance_path / "pkimaster.sqlite")),
         ADMIN_TOKEN=os.environ.get("PKIMASTER_ADMIN_TOKEN", ""),
-        KEY_ENCRYPTION_SECRET=os.environ.get(
-            "PKIMASTER_KEY_ENCRYPTION_SECRET", os.environ.get("PKIMASTER_SECRET_KEY", "dev-only-change-me")
-        ),
+        KEY_ENCRYPTION_SECRET=os.environ.get("PKIMASTER_KEY_ENCRYPTION_SECRET", ""),
         INSTANCE_PATH=str(instance_path),
     )
     if test_config:
         app.config.update(test_config)
+    if not app.config.get("TESTING"):
+        missing_settings = [
+            name
+            for name in ("SECRET_KEY", "KEY_ENCRYPTION_SECRET")
+            if not str(app.config.get(name, "")).strip()
+        ]
+        if missing_settings:
+            missing_csv = ", ".join(f"PKIMASTER_{name}" for name in missing_settings)
+            raise RuntimeError(f"Missing required security configuration: {missing_csv}")
     init_db(app)
 
     @app.teardown_appcontext
@@ -903,9 +910,6 @@ def main() -> None:
         host=os.environ.get("PKIMASTER_HOST", "127.0.0.1"),
         port=int(os.environ.get("PKIMASTER_PORT", "8000")),
     )
-
-
-app = create_app()
 
 
 if __name__ == "__main__":
