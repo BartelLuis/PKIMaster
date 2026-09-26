@@ -198,6 +198,21 @@ class PKIMasterTestCase(unittest.TestCase):
         self.issue_leaf()
         self.assertEqual(self.count("certificates"), 0)
 
+    def test_parent_crl_upload_rejects_repeated_begin_markers(self):
+        self.activate_issuer(import_crl=False)
+        malicious = ("-----BEGIN X509 CRL-----\n" * 16) + "-----END X509 CRL-----\n"
+        response = self.post("/ca/parent-crls", {"parent_crls_pem": malicious})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Upload only PEM-encoded parent CRLs.", response.data)
+        self.assertEqual(self.local_ca()["parent_crls_pem"], "")
+
+    def test_parent_crl_upload_rejects_empty_crl_block(self):
+        self.activate_issuer(import_crl=False)
+        response = self.post("/ca/parent-crls", {"parent_crls_pem": "-----BEGIN X509 CRL-----\n-----END X509 CRL-----\n"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Upload only PEM-encoded parent CRLs.", response.data)
+        self.assertEqual(self.local_ca()["parent_crls_pem"], "")
+
     def test_parent_revocation_disables_signing_and_cannot_be_rolled_back(self):
         authority = self.activate_issuer()
         previous = authority["parent_crls_pem"]
