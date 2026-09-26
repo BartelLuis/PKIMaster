@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid">
+  <section class="card">
+    <h2>Create CA</h2>
+    <form method="post" action="{{ url_for('create_authority') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Name
+        <input name="name" required maxlength="100" placeholder="Operations Root">
+      </label>
+      <label>Role
+        <select name="role">
+          <option value="root">Root</option>
+          <option value="intermediate">Intermediate</option>
+          <option value="issuing">Issuing</option>
+        </select>
+      </label>
+      <label>Certificate common name
+        <input name="common_name" required maxlength="255" placeholder="Operations Root CA">
+      </label>
+      <label>Parent CA
+        <select name="parent_id">
+          <option value="">No parent (self-signed root)</option>
+          {% for authority in authorities %}
+            <option value="{{ authority['id'] }}">{{ authority['name'] }} · {{ authority['role'] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Validity in days
+        <input name="validity_days" type="number" min="1" max="7300" value="3650" required>
+      </label>
+      <button type="submit">Create CA</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Issue Certificate</h2>
+    <form method="post" action="{{ url_for('create_certificate') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Certificate common name
+        <input name="common_name" required maxlength="255" placeholder="service.internal">
+      </label>
+      <label>Issuing authority
+        <select name="authority_id" required>
+          {% for authority in issuing_authorities %}
+            <option value="{{ authority['id'] }}">{{ authority['name'] }} · {{ authority['role'] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>DNS Subject Alternative Names
+        <textarea name="subject_alt_names" rows="4" placeholder="service.internal, api.service.internal"></textarea>
+      </label>
+      <label>Validity in days
+        <input name="validity_days" type="number" min="1" max="825" value="397" required>
+      </label>
+      <button type="submit" {% if not issuing_authorities %}disabled{% endif %}>Issue certificate</button>
+    </form>
+    {% if not issuing_authorities %}
+      <p class="muted">Create an Issuing CA before generating end-entity certificates.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card" style="margin-top:1rem;">
+  <h2>Private key access</h2>
+  {% if admin_token_configured %}
+    {% if key_download_enabled %}
+      <p class="muted">Private-key downloads are unlocked for this session.</p>
+    {% else %}
+      <form method="post" action="{{ url_for('unlock_private_keys') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Admin token
+          <input name="token" type="password" required autocomplete="current-password">
+        </label>
+        <button type="submit">Unlock private-key downloads</button>
+      </form>
+    {% endif %}
+  {% else %}
+    <p class="muted">Set <span class="mono">PKIMASTER_ADMIN_TOKEN</span> to enable private-key downloads.</p>
+  {% endif %}
+</section>
+
+<section class="card" style="margin-top:1rem;">
+  <h2>Managed certificate authorities</h2>
+  {% if authorities %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Role</th>
+          <th>Subject</th>
+          <th>Parent</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for authority in authorities %}
+          <tr>
+            <td><a href="{{ url_for('authority_detail', authority_id=authority['id']) }}">{{ authority['name'] }}</a></td>
+            <td><span class="pill">{{ authority['role'] }}</span></td>
+            <td class="mono">{{ authority['common_name'] }}</td>
+            <td>{{ authority['parent_name'] or 'Self-signed' }}</td>
+            <td class="actions">
+              <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">cert</a>
+              {% if key_download_enabled %}
+                <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">key</a>
+              {% endif %}
+              <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">chain</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Create a Root CA to start building your trust hierarchy.</p>
+  {% endif %}
+</section>
+
+<section class="card" style="margin-top:1rem;">
+  <h2>Issued end-entity certificates</h2>
+  {% if certificates %}
+    <table>
+      <thead>
+        <tr>
+          <th>Common name</th>
+          <th>Issued by</th>
+          <th>SANs</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for certificate in certificates %}
+          <tr>
+            <td class="mono">{{ certificate['common_name'] }}</td>
+            <td>{{ certificate['authority_name'] }}</td>
+            <td class="mono">{{ certificate['subject_alt_names'] or certificate['common_name'] }}</td>
+            <td class="actions">
+              <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='cert') }}">cert</a>
+              {% if key_download_enabled %}
+                <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='key') }}">key</a>
+              {% endif %}
+              <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">chain</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Issued certificates will appear here.</p>
+  {% endif %}
+</section>
+{% endblock %}

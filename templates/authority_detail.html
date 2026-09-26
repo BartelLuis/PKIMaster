@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <p><a href="{{ url_for('index') }}">← Back to dashboard</a></p>
+  <h2>{{ authority['name'] }}</h2>
+  <p><span class="pill">{{ authority['role'] }}</span></p>
+  <table>
+    <tbody>
+      <tr><th>Subject</th><td class="mono">{{ authority['common_name'] }}</td></tr>
+      <tr><th>Serial</th><td class="mono">{{ authority['serial_number'] }}</td></tr>
+      <tr><th>Parent</th><td>{{ authority['parent_name'] or 'Self-signed' }}</td></tr>
+      <tr><th>Valid from</th><td>{{ authority['not_before'] }}</td></tr>
+      <tr><th>Valid to</th><td>{{ authority['not_after'] }}</td></tr>
+      <tr>
+        <th>Downloads</th>
+        <td class="actions">
+          <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">certificate</a>
+          {% if key_download_enabled %}
+            <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">private key</a>
+          {% endif %}
+          <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">full chain</a>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<div class="grid" style="margin-top:1rem;">
+  <section class="card">
+    <h3>Child CAs</h3>
+    {% if child_authorities %}
+      <ul>
+        {% for child in child_authorities %}
+          <li><a href="{{ url_for('authority_detail', authority_id=child['id']) }}">{{ child['name'] }}</a> · {{ child['role'] }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No subordinate CAs yet.</p>
+    {% endif %}
+  </section>
+  <section class="card">
+    <h3>Issued certificates</h3>
+    {% if issued_certificates %}
+      <ul>
+        {% for certificate in issued_certificates %}
+          <li>
+            <span class="mono">{{ certificate['common_name'] }}</span>
+            · <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">download chain</a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No certificates issued from this authority yet.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
