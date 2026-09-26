@@ -1,6 +1,14 @@
 # PKIMaster
 
-PKIMaster is a browser-managed private PKI for Debian 13. Version 0.2 adds authenticated administration, certificate lifecycle controls, and an APT-installable service to the original CA application.
+[![Python CI](https://github.com/BartelLuis/PKIMaster/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BartelLuis/PKIMaster/actions/workflows/ci.yml)
+[![Security](https://github.com/BartelLuis/PKIMaster/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/BartelLuis/PKIMaster/actions/workflows/security.yml)
+[![Debian package](https://github.com/BartelLuis/PKIMaster/actions/workflows/debian.yml/badge.svg?branch=main)](https://github.com/BartelLuis/PKIMaster/actions/workflows/debian.yml)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](#development-and-verification)
+[![Debian 13](https://img.shields.io/badge/Debian-13-A81D33?logo=debian&logoColor=white)](#install-with-apt)
+
+**Private PKI for Debian, managed entirely through your browser.**
+
+PKIMaster is a self-hosted private PKI (public key infrastructure) platform for Debian 13, delivered as an APT package with web-only setup and configuration. Manage Root, Intermediate, and Issuing certificate authorities, sign certificate requests, issue and revoke certificates, and publish signed certificate revocation lists from one console. User roles, encrypted private-key storage, and audit logging support controlled administration of your organization's internal certificates.
 
 ## Install with APT
 
