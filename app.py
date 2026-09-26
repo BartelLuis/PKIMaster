@@ -88,16 +88,33 @@ def authority_block_reason(authority: sqlite3.Row) -> str:
     return ""
 
 
+def split_pem_crl_blocks(pem: str) -> list[str]:
+    begin_marker = "-----BEGIN X509 CRL-----"
+    end_marker = "-----END X509 CRL-----"
+    blocks: list[str] = []
+    cursor = 0
+    while True:
+        while cursor < len(pem) and pem[cursor].isspace():
+            cursor += 1
+        if cursor == len(pem):
+            return blocks
+        if not pem.startswith(begin_marker, cursor):
+            raise ValueError("Upload only PEM-encoded parent CRLs.")
+        end = pem.find(end_marker, cursor + len(begin_marker))
+        if end < 0:
+            raise ValueError("Upload only PEM-encoded parent CRLs.")
+        end += len(end_marker)
+        blocks.append(pem[cursor:end])
+        cursor = end
+
+
 def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
     """Validate each ancestor's status using an explicitly imported, fresh full CRL."""
-    import re
     if not pem.strip():
         raise ValueError("Import current signed parent CRLs before using this CA.")
     try:
         chain = x509.load_pem_x509_certificates((authority["certificate_pem"] + authority["parent_chain_pem"]).encode())
-        blocks = re.findall(r"-----BEGIN X509 CRL-----.*?-----END X509 CRL-----", pem, re.DOTALL)
-        if re.sub(r"-----BEGIN X509 CRL-----.*?-----END X509 CRL-----", "", pem, flags=re.DOTALL).strip():
-            raise ValueError("Upload only PEM-encoded parent CRLs.")
+        blocks = split_pem_crl_blocks(pem)
         crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
         if len(chain) < 2 or len(crls) != len(chain) - 1:
             raise ValueError("Provide one full CRL per parent, ordered immediate issuer to root.")
@@ -296,8 +313,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     raise
                 canonical, revoked = pem, True
             # Reject rollback even after a cached CRL expires.
-            import re
-            blocks = lambda value: [x509.load_pem_x509_crl(block.encode()) for block in re.findall(r"-----BEGIN X509 CRL-----.*?-----END X509 CRL-----", value, re.DOTALL)]
+            blocks = lambda value: [x509.load_pem_x509_crl(block.encode()) for block in split_pem_crl_blocks(value)]
             for old, new in zip(blocks(authority["parent_crls_pem"]), blocks(canonical)):
                 if new.last_update_utc < old.last_update_utc:
                     raise ValueError("An older parent CRL cannot replace a newer CRL.")
