@@ -88,16 +88,38 @@ def authority_block_reason(authority: sqlite3.Row) -> str:
     return ""
 
 
+def pem_crl_blocks(pem: str) -> list[str]:
+    if not isinstance(pem, str):
+        raise ValueError("Upload only PEM-encoded parent CRLs.")
+    begin = "-----BEGIN X509 CRL-----"
+    end = "-----END X509 CRL-----"
+    blocks: list[str] = []
+    block: list[str] = []
+    for line in pem.splitlines(keepends=True):
+        stripped = line.strip()
+        if block:
+            block.append(line)
+            if stripped == end:
+                blocks.append("".join(block))
+                block = []
+            continue
+        if not stripped:
+            continue
+        if stripped != begin:
+            raise ValueError("Upload only PEM-encoded parent CRLs.")
+        block = [line]
+    if block:
+        raise ValueError("Upload only PEM-encoded parent CRLs.")
+    return blocks
+
+
 def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
     """Validate each ancestor's status using an explicitly imported, fresh full CRL."""
-    import re
     if not pem.strip():
         raise ValueError("Import current signed parent CRLs before using this CA.")
     try:
         chain = x509.load_pem_x509_certificates((authority["certificate_pem"] + authority["parent_chain_pem"]).encode())
-        blocks = re.findall(r"-----BEGIN X509 CRL-----.*?-----END X509 CRL-----", pem, re.DOTALL)
-        if re.sub(r"-----BEGIN X509 CRL-----.*?-----END X509 CRL-----", "", pem, flags=re.DOTALL).strip():
-            raise ValueError("Upload only PEM-encoded parent CRLs.")
+        blocks = pem_crl_blocks(pem)
         crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
         if len(chain) < 2 or len(crls) != len(chain) - 1:
             raise ValueError("Provide one full CRL per parent, ordered immediate issuer to root.")
@@ -296,8 +318,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     raise
                 canonical, revoked = pem, True
             # Reject rollback even after a cached CRL expires.
-            import re
-            blocks = lambda value: [x509.load_pem_x509_crl(block.encode()) for block in re.findall(r"-----BEGIN X509 CRL-----.*?-----END X509 CRL-----", value, re.DOTALL)]
+            blocks = lambda value: [x509.load_pem_x509_crl(block.encode()) for block in pem_crl_blocks(value)]
             for old, new in zip(blocks(authority["parent_crls_pem"]), blocks(canonical)):
                 if new.last_update_utc < old.last_update_utc:
                     raise ValueError("An older parent CRL cannot replace a newer CRL.")
