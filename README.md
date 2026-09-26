@@ -26,41 +26,41 @@ Use the [browser workflow and migration instructions](docs/BSI-READINESS.md#brow
 
 ## Screenshots
 
-Current web console with fictional demo data and one local Issuing CA. The Root runs separately; only its public chain and signed CRL are imported.
+Captured from the current web console on **2026-09-26**, using fictional demo data and one local Issuing CA. The Root runs separately; only its public chain and signed CRL are imported. The key-storage screenshot shows initial provider setup before a CA is created. Image filenames include a content fingerprint so updated captures use new URLs.
 
-![Certificate inventory with exactly one local CA and five demo certificates](docs/screenshots/certificate-inventory.png)
+![Certificate inventory with exactly one local CA and five demo certificates](docs/screenshots/certificate-inventory-b8525cbbb0db.png)
 
 <details>
 <summary>Certificate issuance</summary>
 
 Issue certificates through the server's single CA, using certificate requests, certificate profiles and bounded validity.
 
-![Certificate issuance through the local Issuing CA](docs/screenshots/certificate-issuance.png)
+![Certificate issuance through the local Issuing CA](docs/screenshots/certificate-issuance-6b5e9f9e10d8.png)
 
 </details>
 
 <details>
 <summary>Web-only configuration</summary>
 
-![Web configuration for organization, PKI policy and HTTPS service](docs/screenshots/web-configuration.png)
+![Web configuration for organization, PKI policy and HTTPS service](docs/screenshots/web-configuration-c97e55e4e69c.png)
 
 </details>
 
 <details>
 <summary>Audit log</summary>
 
-![Audit history including MFA, CA activation, parent CRL import and certificate lifecycle events](docs/screenshots/audit-log.png)
+![Audit history including MFA, CA activation, parent CRL import and certificate lifecycle events](docs/screenshots/audit-log-79fb00d5f038.png)
 
 </details>
 
 <details>
 <summary>Identity providers, key storage and security posture</summary>
 
-![Local, LDAP and OpenID Connect configuration](docs/screenshots/identity-providers.png)
+![Local, LDAP and OpenID Connect configuration](docs/screenshots/identity-providers-f41ea783ee23.png)
 
-![Optional PKCS#11, SoftHSM and Azure key storage](docs/screenshots/key-storage.png)
+![Initial PKCS#11 and Azure configuration, including SoftHSM token initialization](docs/screenshots/key-storage-ee380ae6a2ad.png)
 
-![CA security posture and verified audit evidence](docs/screenshots/security-posture.png)
+![CA security posture and verified audit evidence](docs/screenshots/security-posture-c169ce156d5a.png)
 
 </details>
 
