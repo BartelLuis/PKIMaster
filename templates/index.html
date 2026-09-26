@@ -4,6 +4,7 @@
   <section class="card">
     <h2>Create CA</h2>
     <form method="post" action="{{ url_for('create_authority') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Name
         <input name="name" required maxlength="100" placeholder="Operations Root">
       </label>
@@ -35,6 +36,7 @@
   <section class="card">
     <h2>Issue Certificate</h2>
     <form method="post" action="{{ url_for('create_certificate') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Certificate common name
         <input name="common_name" required maxlength="255" placeholder="service.internal">
       </label>
@@ -66,6 +68,7 @@
       <p class="muted">Private-key downloads are unlocked for this session.</p>
     {% else %}
       <form method="post" action="{{ url_for('unlock_private_keys') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Admin token
           <input name="token" type="password" required autocomplete="current-password">
         </label>

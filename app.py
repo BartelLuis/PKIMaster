@@ -67,7 +67,7 @@ def valid_parent_child_roles(parent_role: str, child_role: str) -> bool:
 
 
 def private_key_cipher() -> Fernet:
-    secret = current_app.config.get("KEY_ENCRYPTION_SECRET", current_app.config["SECRET_KEY"])
+    secret = current_app.config.get("KEY_ENCRYPTION_SECRET") or current_app.config["SECRET_KEY"]
     key = base64.urlsafe_b64encode(hashlib.sha256(str(secret).encode("utf-8")).digest())
     return Fernet(key)
 
@@ -90,6 +90,20 @@ def authority_key_identifier_from_certificate(certificate: x509.Certificate) -> 
         )
     except x509.ExtensionNotFound:
         return x509.AuthorityKeyIdentifier.from_issuer_public_key(certificate.public_key())
+
+
+def get_csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def validate_csrf() -> bool:
+    submitted_token = request.form.get("csrf_token", "")
+    stored_token = session.get("csrf_token", "")
+    return bool(submitted_token and stored_token) and compare_digest(submitted_token, stored_token)
 
 
 def build_subject(common_name: str) -> x509.Name:
@@ -261,6 +275,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             missing_csv = ", ".join(missing_settings)
             raise RuntimeError(f"Missing required security configuration: {missing_csv}")
     init_db(app)
+    app.jinja_env.globals["csrf_token"] = get_csrf_token
 
     @app.teardown_appcontext
     def close_db(_: object | None) -> None:
@@ -313,6 +328,8 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/unlock-private-keys")
     def unlock_private_keys() -> Response:
+        if not validate_csrf():
+            return Response("Forbidden", status=403)
         configured_token = app.config.get("ADMIN_TOKEN", "")
         submitted_token = request.form.get("token", "")
         if not configured_token:
@@ -326,6 +343,8 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/authorities")
     def create_authority() -> Response:
+        if not validate_csrf():
+            return Response("Forbidden", status=403)
         name = request.form.get("name", "").strip()
         role = request.form.get("role", "").strip().lower()
         common_name = request.form.get("common_name", "").strip()
@@ -388,6 +407,8 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/certificates")
     def create_certificate() -> Response:
+        if not validate_csrf():
+            return Response("Forbidden", status=403)
         common_name = request.form.get("common_name", "").strip()
         authority_id = request.form.get("authority_id", "").strip()
         validity_days = parse_positive_int(request.form.get("validity_days"), 397, 1, 825)
@@ -574,8 +595,20 @@ def text_download(stem: str, suffix: str, body: str) -> Response:
 
 
 def main() -> None:
-    os.environ.setdefault("PKIMASTER_SECRET_KEY", secrets.token_urlsafe(32))
-    os.environ.setdefault("PKIMASTER_KEY_ENCRYPTION_SECRET", secrets.token_urlsafe(32))
+    instance_path = Path(os.environ.get("PKIMASTER_INSTANCE_PATH", "instance"))
+    instance_path.mkdir(parents=True, exist_ok=True)
+    for env_name, filename in (
+        ("PKIMASTER_SECRET_KEY", ".dev-secret-key"),
+        ("PKIMASTER_KEY_ENCRYPTION_SECRET", ".dev-key-encryption-secret"),
+    ):
+        if not os.environ.get(env_name):
+            secret_path = instance_path / filename
+            if secret_path.exists():
+                os.environ[env_name] = secret_path.read_text(encoding="utf-8").strip()
+            else:
+                secret_value = secrets.token_urlsafe(32)
+                secret_path.write_text(secret_value, encoding="utf-8")
+                os.environ[env_name] = secret_value
     development_app = create_app()
     development_app.run(
         host=os.environ.get("PKIMASTER_HOST", "127.0.0.1"),
