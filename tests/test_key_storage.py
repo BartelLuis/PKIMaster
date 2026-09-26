@@ -71,7 +71,8 @@ class KeyStorageWebTests(unittest.TestCase):
         self.assertEqual(self.post("/settings/keys", {"backend": "software"}).status_code, 400)
         with patch("key_backends.load_signer", side_effect=ValueError("Provider unavailable")):
             response = self.client.get("/crl/1.crl")
-            self.assertGreaterEqual(response.status_code, 400)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.data, b"The CRL could not be generated.")
         with patch("key_backends.provision_signer") as provision:
             self.post("/authorities", {"name": "second", "role": "root", "common_name": "Second"})
             provision.assert_not_called()

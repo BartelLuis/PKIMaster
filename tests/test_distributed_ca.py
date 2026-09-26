@@ -113,6 +113,14 @@ class DistributedCATests(unittest.TestCase):
             self.assertEqual(node.get("/authorities/1/key").status_code, 403)
         self.assertEqual(self.issuing.records("certificates")[0]["private_key_pem"], "")
 
+    def test_parent_crl_bundle_with_blank_lines_is_accepted_and_canonicalized(self):
+        intermediate = Node(self, "intermediate")
+        intermediate.add_reviewer()
+        root_crls = self.root.activate_child(intermediate)
+        intermediate.activate_child(self.issuing, parent_crls="\n\n" + root_crls)
+        expected = intermediate.get("/crl/1.crl?format=pem").data.decode() + root_crls
+        self.assertEqual(self.issuing.records("authorities")[0]["parent_crls_pem"], expected)
+
     def test_independent_approval_is_required_and_cannot_be_replayed(self):
         self.assertIn(b"different administrator", self.root.request_child(self.issuing).data)
         denied = self.root.post("/ca/requests/1/approve")

@@ -88,33 +88,33 @@ def authority_block_reason(authority: sqlite3.Row) -> str:
     return ""
 
 
-def _split_pem_crl_blocks(pem: str, *, strict: bool = True) -> list[str]:
+def split_pem_crl_blocks(pem: str, *, strict: bool = True) -> list[str]:
     """Return PEM CRL blocks, optionally rejecting non-whitespace content between them."""
-    begin = "-----BEGIN X509 CRL-----"
-    end = "-----END X509 CRL-----"
+    begin_marker = "-----BEGIN X509 CRL-----"
+    end_marker = "-----END X509 CRL-----"
     blocks: list[str] = []
     lines = pem.splitlines(keepends=True)
-    position = 0
-    while position < len(lines):
+    cursor = 0
+    while cursor < len(lines):
         if strict:
-            while position < len(lines) and not lines[position].strip():
-                position += 1
+            while cursor < len(lines) and not lines[cursor].strip():
+                cursor += 1
         else:
-            while position < len(lines) and lines[position].strip() != begin:
-                position += 1
-        if position >= len(lines):
+            while cursor < len(lines) and lines[cursor].strip() != begin_marker:
+                cursor += 1
+        if cursor >= len(lines):
             break
-        if lines[position].strip() != begin:
+        if lines[cursor].strip() != begin_marker:
             raise ValueError("Upload only PEM-encoded parent CRLs.")
-        block = [lines[position]]
-        position += 1
-        while position < len(lines):
-            block.append(lines[position])
-            if lines[position].strip() == end:
-                position += 1
+        block = [lines[cursor]]
+        cursor += 1
+        while cursor < len(lines):
+            block.append(lines[cursor])
+            if lines[cursor].strip() == end_marker:
+                cursor += 1
                 blocks.append("".join(block))
                 break
-            position += 1
+            cursor += 1
         else:
             raise ValueError("Upload only PEM-encoded parent CRLs.")
     return blocks
@@ -126,7 +126,7 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
         raise ValueError("Import current signed parent CRLs before using this CA.")
     try:
         chain = x509.load_pem_x509_certificates((authority["certificate_pem"] + authority["parent_chain_pem"]).encode())
-        blocks = _split_pem_crl_blocks(pem)
+        blocks = split_pem_crl_blocks(pem)
         if not blocks:
             raise ValueError("Upload only PEM-encoded parent CRLs.")
         crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
@@ -327,8 +327,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                     raise
                 canonical, revoked = pem, True
             # Reject rollback even after a cached CRL expires.
-            old_blocks = _split_pem_crl_blocks(authority["parent_crls_pem"], strict=False)
-            new_blocks = _split_pem_crl_blocks(canonical, strict=False)
+            old_blocks = split_pem_crl_blocks(authority["parent_crls_pem"], strict=False)
+            new_blocks = split_pem_crl_blocks(canonical, strict=False)
             if len(old_blocks) != len(new_blocks):
                 raise ValueError("Parent CRL bundle is inconsistent with stored CRLs.")
             old_crls = [x509.load_pem_x509_crl(block.encode()) for block in old_blocks]
@@ -554,7 +554,8 @@ def create_app(test_config: dict | None = None) -> Flask:
             db.commit()
         except ValueError as error:
             db.rollback()
-            return Response(str(error), status=409)
+            current_app.logger.warning("CRL publication failed for authority %s: %s", authority_id, error)
+            return Response("The CRL could not be generated.", status=409)
         as_pem = request.args.get("format") == "pem"
         body = x509.load_der_x509_crl(der).public_bytes(serialization.Encoding.PEM) if as_pem else der
         response = Response(body, mimetype="application/x-pem-file" if as_pem else "application/pkix-crl")
