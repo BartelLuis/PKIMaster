@@ -93,21 +93,26 @@ def _split_pem_crl_blocks(pem: str) -> list[str]:
     begin = "-----BEGIN X509 CRL-----"
     end = "-----END X509 CRL-----"
     blocks: list[str] = []
+    lines = pem.splitlines(keepends=True)
     position = 0
-    length = len(pem)
-    while position < length:
-        while position < length and pem[position].isspace():
+    while position < len(lines):
+        while position < len(lines) and not lines[position].strip():
             position += 1
-        if position >= length:
+        if position >= len(lines):
             break
-        if not pem.startswith(begin, position):
+        if lines[position].strip() != begin:
             raise ValueError("Upload only PEM-encoded parent CRLs.")
-        finish = pem.find(end, position)
-        if finish == -1:
+        block = [lines[position]]
+        position += 1
+        while position < len(lines):
+            block.append(lines[position])
+            if lines[position].strip() == end:
+                position += 1
+                blocks.append("".join(block))
+                break
+            position += 1
+        else:
             raise ValueError("Upload only PEM-encoded parent CRLs.")
-        finish += len(end)
-        blocks.append(pem[position:finish])
-        position = finish
     return blocks
 
 
