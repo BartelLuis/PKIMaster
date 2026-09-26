@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import sqlite3
 from hmac import compare_digest
@@ -8,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from cryptography import x509
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -400,6 +403,32 @@ def allowed_ca_path_length(role: str, issuer_role: str | None = None) -> int:
     return min(role_depth, max(max_subordinate_depth(issuer_role) - 1, 0))
 
 
+def private_key_cipher() -> Fernet:
+    secret = current_app.config.get("KEY_ENCRYPTION_SECRET", current_app.config["SECRET_KEY"])
+    key = base64.urlsafe_b64encode(hashlib.sha256(str(secret).encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def encrypt_private_key(private_key_pem: str) -> str:
+    return private_key_cipher().encrypt(private_key_pem.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_private_key(encrypted_private_key: str) -> str:
+    return private_key_cipher().decrypt(encrypted_private_key.encode("utf-8")).decode("utf-8")
+
+
+def authority_key_identifier_from_certificate(certificate: x509.Certificate) -> x509.AuthorityKeyIdentifier:
+    try:
+        subject_key_identifier = certificate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+        return x509.AuthorityKeyIdentifier(
+            key_identifier=subject_key_identifier.digest,
+            authority_cert_issuer=None,
+            authority_cert_serial_number=None,
+        )
+    except x509.ExtensionNotFound:
+        return x509.AuthorityKeyIdentifier.from_issuer_public_key(certificate.public_key())
+
+
 def build_subject(common_name: str) -> x509.Name:
     return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
 
@@ -465,10 +494,7 @@ def create_ca_certificate(
         issuer_private_key = serialization.load_pem_private_key(issuer_private_key_pem.encode("utf-8"), None)
         builder = (
             builder.issuer_name(issuer_certificate.subject)
-            .add_extension(
-                x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_private_key.public_key()),
-                critical=False,
-            )
+            .add_extension(authority_key_identifier_from_certificate(issuer_certificate), critical=False)
         )
         certificate = builder.sign(private_key=issuer_private_key, algorithm=hashes.SHA256())
     else:
@@ -513,9 +539,7 @@ def issue_end_entity_certificate(
         .not_valid_before(not_before)
         .not_valid_after(not_after)
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False)
-        .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_private_key.public_key()), critical=False
-        )
+        .add_extension(authority_key_identifier_from_certificate(issuer_certificate), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
             x509.KeyUsage(
@@ -555,6 +579,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         SECRET_KEY=os.environ.get("PKIMASTER_SECRET_KEY", "dev-only-change-me"),
         DATABASE=os.environ.get("PKIMASTER_DB_PATH", str(instance_path / "pkimaster.sqlite")),
         ADMIN_TOKEN=os.environ.get("PKIMASTER_ADMIN_TOKEN", ""),
+        KEY_ENCRYPTION_SECRET=os.environ.get(
+            "PKIMASTER_KEY_ENCRYPTION_SECRET", os.environ.get("PKIMASTER_SECRET_KEY", "dev-only-change-me")
+        ),
         INSTANCE_PATH=str(instance_path),
     )
     if test_config:
@@ -661,7 +688,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 role=role,
                 issuer_role=parent["role"] if parent else None,
                 issuer_certificate_pem=parent["certificate_pem"] if parent else None,
-                issuer_private_key_pem=parent["private_key_pem"] if parent else None,
+                issuer_private_key_pem=decrypt_private_key(parent["private_key_pem"]) if parent else None,
             )
             db = get_db()
             db.execute(
@@ -676,7 +703,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     common_name,
                     int(parent_id) if parent_id else None,
                     certificate_pem,
-                    private_key_pem,
+                    encrypt_private_key(private_key_pem),
                     serial_number,
                     not_before,
                     not_after,
@@ -710,7 +737,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         certificate_pem, private_key_pem, serial_number, not_before, not_after = issue_end_entity_certificate(
             common_name=common_name,
             issuer_certificate_pem=authority["certificate_pem"],
-            issuer_private_key_pem=authority["private_key_pem"],
+            issuer_private_key_pem=decrypt_private_key(authority["private_key_pem"]),
             validity_days=validity_days,
             subject_alt_names=sans,
         )
@@ -726,7 +753,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 int(authority_id),
                 ", ".join(name.strip() for name in sans if name.strip()),
                 certificate_pem,
-                private_key_pem,
+                encrypt_private_key(private_key_pem),
                 serial_number,
                 not_before,
                 not_after,
@@ -746,7 +773,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         if artifact == "key":
             if not key_download_enabled():
                 return Response("Forbidden", status=403)
-            return text_download(authority["name"], "key.pem", authority["private_key_pem"])
+            return text_download(authority["name"], "key.pem", decrypt_private_key(authority["private_key_pem"]))
         if artifact == "chain":
             return text_download(authority["name"], "chain.pem", build_ca_chain(authority_id))
         return Response("Not found", status=404)
@@ -762,7 +789,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         if artifact == "key":
             if not key_download_enabled():
                 return Response("Forbidden", status=403)
-            return text_download(certificate["common_name"], "key.pem", certificate["private_key_pem"])
+            return text_download(
+                certificate["common_name"], "key.pem", decrypt_private_key(certificate["private_key_pem"])
+            )
         if artifact == "chain":
             chain = certificate["certificate_pem"] + build_ca_chain(certificate["authority_id"])
             return text_download(certificate["common_name"], "chain.pem", chain)
@@ -869,11 +898,14 @@ def text_download(stem: str, suffix: str, body: str) -> Response:
 
 
 def main() -> None:
-    app = create_app()
-    app.run(
+    development_app = create_app()
+    development_app.run(
         host=os.environ.get("PKIMASTER_HOST", "127.0.0.1"),
         port=int(os.environ.get("PKIMASTER_PORT", "8000")),
     )
+
+
+app = create_app()
 
 
 if __name__ == "__main__":

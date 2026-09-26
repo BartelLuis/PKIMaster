@@ -14,4 +14,4 @@ dependencies = [
 ]
 
 [project.scripts]
-pkimaster = "app:main"
+pkimaster-dev = "app:main"

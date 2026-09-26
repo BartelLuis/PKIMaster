@@ -78,6 +78,8 @@ class PKIMasterTestCase(unittest.TestCase):
         self.assertEqual(intermediate_chain.data.count(b"BEGIN CERTIFICATE"), 2)
 
         intermediate_cert = x509.load_pem_x509_certificate(intermediate["certificate_pem"].encode("utf-8"))
+        intermediate_constraints = intermediate_cert.extensions.get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS).value
+        self.assertEqual(intermediate_constraints.path_length, 1)
         root_chain = self.client.get(f"/authorities/{root['id']}/cert")
         root_cert = x509.load_pem_x509_certificate(root_chain.data)
         self.assertEqual(intermediate_cert.issuer, root_cert.subject)

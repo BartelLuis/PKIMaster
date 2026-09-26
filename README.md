@@ -20,10 +20,12 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
 pip install -e .
-pkimaster
+python -m flask --app app:app run --host 127.0.0.1 --port 8000
 ```
 
 Then open `http://127.0.0.1:8000`.
+
+For production-style hosting behind a reverse proxy, point your WSGI server at `app:app`.
 
 ## Configuration
 
@@ -32,6 +34,7 @@ Then open `http://127.0.0.1:8000`.
 - `PKIMASTER_DB_PATH` default: `instance/pkimaster.sqlite`
 - `PKIMASTER_SECRET_KEY` default: `dev-only-change-me`
 - `PKIMASTER_ADMIN_TOKEN` default: unset (private-key downloads stay disabled)
+- `PKIMASTER_KEY_ENCRYPTION_SECRET` default: same value as `PKIMASTER_SECRET_KEY`
 
 ## Tests
 
