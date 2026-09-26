@@ -6,7 +6,7 @@ PKIMaster is a lightweight Python PKI management application that runs on Debian
 
 - Create self-signed Root CAs
 - Create Intermediate and Issuing CAs signed by a parent CA
-- Issue end-entity certificates from any managed CA
+- Issue end-entity certificates from managed Issuing CAs
 - Download certificates, private keys, and full chains in PEM format
 - Persist CA and certificate metadata in SQLite
 - Expose a `/healthz` endpoint for deployment health checks

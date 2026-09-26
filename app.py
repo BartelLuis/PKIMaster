@@ -389,6 +389,17 @@ def key_download_enabled() -> bool:
     return bool(configured_token) and session.get("private_key_access") is True
 
 
+def max_subordinate_depth(role: str) -> int:
+    return {"root": 2, "intermediate": 1, "issuing": 0}[role]
+
+
+def allowed_ca_path_length(role: str, issuer_role: str | None = None) -> int:
+    role_depth = max_subordinate_depth(role)
+    if issuer_role is None:
+        return role_depth
+    return min(role_depth, max(max_subordinate_depth(issuer_role) - 1, 0))
+
+
 def build_subject(common_name: str) -> x509.Name:
     return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
 
@@ -413,6 +424,7 @@ def create_ca_certificate(
     common_name: str,
     validity_days: int,
     role: str,
+    issuer_role: str | None = None,
     issuer_certificate_pem: str | None = None,
     issuer_private_key_pem: str | None = None,
 ) -> tuple[str, str, str, str, str]:
@@ -446,7 +458,7 @@ def create_ca_certificate(
             critical=True,
         )
     )
-    path_length = {"root": 2, "intermediate": 1, "issuing": 0}[role]
+    path_length = allowed_ca_path_length(role, issuer_role)
     builder = builder.add_extension(x509.BasicConstraints(ca=True, path_length=path_length), critical=True)
     if issuer_certificate_pem and issuer_private_key_pem:
         issuer_certificate = x509.load_pem_x509_certificate(issuer_certificate_pem.encode("utf-8"))
@@ -639,11 +651,15 @@ def create_app(test_config: dict | None = None) -> Flask:
             if parent["role"] == "issuing":
                 flash("Issuing CAs cannot sign subordinate CAs.")
                 return redirect(url_for("index"))
+            if role == "intermediate" and parent["role"] != "root":
+                flash("Intermediate CAs must be signed directly by a Root CA.")
+                return redirect(url_for("index"))
         try:
             certificate_pem, private_key_pem, serial_number, not_before, not_after = create_ca_certificate(
                 common_name=common_name,
                 validity_days=validity_days,
                 role=role,
+                issuer_role=parent["role"] if parent else None,
                 issuer_certificate_pem=parent["certificate_pem"] if parent else None,
                 issuer_private_key_pem=parent["private_key_pem"] if parent else None,
             )

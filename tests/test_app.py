@@ -155,6 +155,49 @@ class PKIMasterTestCase(unittest.TestCase):
         issuing_cert = x509.load_pem_x509_certificate(issuing["certificate_pem"].encode("utf-8"))
         self.assertEqual(issued_cert.issuer, issuing_cert.subject)
 
+    def test_direct_root_to_issuing_ca_uses_zero_path_length(self) -> None:
+        self.client.post(
+            "/authorities",
+            data={
+                "name": "Direct Root",
+                "role": "root",
+                "common_name": "Direct Root CA",
+                "parent_id": "",
+                "validity_days": "3650",
+            },
+            follow_redirects=True,
+        )
+
+        with self.app.app_context():
+            import app as app_module
+
+            root = app_module.get_db().execute("SELECT id FROM authorities WHERE name = ?", ("Direct Root",)).fetchone()
+
+        response = self.client.post(
+            "/authorities",
+            data={
+                "name": "Direct Issuing",
+                "role": "issuing",
+                "common_name": "Direct Issuing CA",
+                "parent_id": str(root["id"]),
+                "validity_days": "1825",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Created issuing CA", response.data)
+
+        with self.app.app_context():
+            import app as app_module
+
+            issuing = app_module.get_db().execute(
+                "SELECT certificate_pem FROM authorities WHERE name = ?", ("Direct Issuing",)
+            ).fetchone()
+
+        issuing_cert = x509.load_pem_x509_certificate(issuing["certificate_pem"].encode("utf-8"))
+        basic_constraints = issuing_cert.extensions.get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS).value
+        self.assertEqual(basic_constraints.path_length, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
