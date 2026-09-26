@@ -13,7 +13,7 @@ dependencies = [
   "Flask>=3.1,<4",
   "cryptography>=43,<51",
   "Werkzeug>=3.1,<4",
-  "gunicorn>=23,<24; platform_system != 'Windows'",
+  "gunicorn>=23,<27; platform_system != 'Windows'",
 ]
 
 [project.scripts]
