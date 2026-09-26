@@ -519,7 +519,8 @@ def create_app(test_config: dict | None = None) -> Flask:
             db.commit()
         except ValueError as error:
             db.rollback()
-            return Response(str(error), status=409)
+            current_app.logger.warning("CRL publication failed for authority %s: %s", authority_id, error)
+            return Response("The CRL could not be generated.", status=409)
         as_pem = request.args.get("format") == "pem"
         body = x509.load_der_x509_crl(der).public_bytes(serialization.Encoding.PEM) if as_pem else der
         response = Response(body, mimetype="application/x-pem-file" if as_pem else "application/pkix-crl")
