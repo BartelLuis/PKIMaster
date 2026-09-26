@@ -10,6 +10,41 @@
 
 PKIMaster is a self-hosted private PKI (public key infrastructure) platform for Debian 13, delivered as an APT package with web-only setup and configuration. Manage Root, Intermediate, and Issuing certificate authorities, sign certificate requests, issue and revoke certificates, and publish signed certificate revocation lists from one console. User roles, encrypted private-key storage, and audit logging support controlled administration of your organization's internal certificates.
 
+## Screenshots
+
+These screenshots show the web console running with local demo data for a fictional organization.
+
+**Certificate inventory** — The auditor view shows the CA hierarchy, issued certificates, revocation status, and upcoming expirations.
+
+![PKIMaster certificate inventory with Root, Intermediate, and Issuing CAs, five certificates, and expiry statistics](docs/screenshots/certificate-inventory.png)
+
+<details>
+<summary>CA creation and certificate issuance</summary>
+
+Create certificate authorities and issue certificates with a selected profile, DNS/IP subject alternative names, and a policy-limited validity period. Existing certificate requests can also be signed through the web form.
+
+![PKIMaster administrator forms for creating a CA and issuing a certificate](docs/screenshots/certificate-issuance.png)
+
+</details>
+
+<details>
+<summary>Web-only configuration</summary>
+
+Manage organization settings, certificate and CRL lifetimes, session timeout, private-key export policy, and the HTTPS listener from the browser.
+
+![PKIMaster web settings for organization, PKI policy, and HTTPS service configuration](docs/screenshots/web-configuration.png)
+
+</details>
+
+<details>
+<summary>Audit log</summary>
+
+Review account activity, CA creation, certificate issuance and revocation, and CRL publication with timestamps and actor information.
+
+![PKIMaster audit log showing demo account activity and certificate lifecycle events](docs/screenshots/audit-log.png)
+
+</details>
+
 ## Install with APT
 
 Build the package on Debian 13 (the build runs the application tests):
