@@ -13,11 +13,12 @@
   </form>
   {% else %}
   <h2>Sign in to {{ settings.organization }}</h2>
+  <p>Sign in with your password, then verify your authenticator code. First-time users must enroll an authenticator before accessing the PKI.</p>
   <form method="post" action="{{ url_for('enterprise.login') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Username <input name="username" required autocomplete="username" maxlength="64"></label>
     <label>Password <input name="password" type="password" required autocomplete="current-password" maxlength="256"></label>
-    <button type="submit">Sign in</button>
+    <button type="submit">Continue to authenticator</button>
   </form>
   {% endif %}
 </section>

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pkimaster"
 version = "0.2.0"
-description = "Web-managed PKI with role-based administration and Debian service packaging."
+description = "One CA per server: web-managed private PKI with MFA, independent CA approval and Debian APT packaging."
 readme = "README.md"
 requires-python = ">=3.11"
 maintainers = [{name = "PKIMaster maintainers", email = "maintainers@pkimaster.de"}]
@@ -20,7 +20,7 @@ dependencies = [
 pkimaster-dev = "app:main"
 
 [tool.setuptools]
-py-modules = ["app", "enterprise", "pki", "pkimaster_server", "wsgi"]
+py-modules = ["app", "enterprise", "mfa", "pki", "pkimaster_server", "wsgi"]
 
 [tool.setuptools.data-files]
 "share/pkimaster/templates" = ["templates/*.html"]

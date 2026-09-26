@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Verify your authenticator</h2>
+  <p>Your password was accepted. Enter the current 6-digit code for {{ current_user['username'] }} to access the PKI.</p>
+  <form method="post" action="{{ url_for('mfa.challenge') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Authenticator code <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required autofocus></label>
+    <button type="submit">Verify code and sign in</button>
+  </form>
+  <p class="muted">Each code can be used once. If you have just signed in elsewhere, wait for the next code. Keep your authenticator clock synchronized.</p>
+  <p class="muted">A lost authenticator requires your protected enrollment backup. This version has no automated MFA reset or recovery codes.</p>
+</section>
+{% endblock %}

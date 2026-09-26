@@ -14,6 +14,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, "/usr/lib/pkimaster")
+from mfa import time_counter, totp
+from cryptography import x509
+
 
 temporary = Path(sys.argv[1])
 verify_upgrade = sys.argv[2:] == ["--verify-upgrade"]
@@ -79,17 +83,37 @@ def wait_for_rejected_listener():
 
 
 credential_file = temporary / "smoke-credentials.json"
+
+
+def complete_authentication(credentials):
+    page = get("/")
+    enrollment = re.search(r'id="mfa-setup-key"[^>]*>([A-Z2-7]+)</dd>', page)
+    if enrollment:
+        credentials["mfa_secret"] = enrollment.group(1)
+    assert credentials.get("mfa_secret"), "No authenticator enrollment credential available."
+    while time_counter() <= credentials.get("last_counter", -1):
+        time.sleep(1)
+    code_time = int(time.time())
+    credentials["last_counter"] = time_counter(code_time)
+    page = post("/mfa/enroll" if enrollment else "/mfa/challenge", {"code": totp(credentials["mfa_secret"], code_time)})
+    assert "Local certificate authority" in page, "Mandatory MFA did not complete."
+    credential_file.write_text(json.dumps(credentials), encoding="utf-8")
+
+
 if verify_upgrade:
     credentials = json.loads(credential_file.read_text(encoding="utf-8"))
-    post("/login", credentials)
-    # Signing with the original Root proves that the retained encryption secret
-    # decrypts an actual CA key after the package has been reinstalled.
+    post("/login", {key: credentials[key] for key in ("username", "password")})
+    complete_authentication(credentials)
+    # A fresh signed CRL proves that the retained secret decrypts the only CA key.
+    certificate = x509.load_pem_x509_certificate(get("/authorities/1/cert").encode())
+    crl = x509.load_pem_x509_crl(get("/crl/1.crl?format=pem").encode())
+    assert crl.is_signature_valid(certificate.public_key()), "Original CA signing key was not retained."
     page = post("/authorities", {
-        "name": "Smoke issuing CA", "role": "issuing", "parent_id": "1",
+        "name": "Smoke issuing CA", "role": "issuing",
         "common_name": "Smoke issuing CA", "validity_days": "180",
     }, token_page="/")
-    assert "Created issuing CA" in page, "Signing with the retained Root CA failed."
-    print("Upgrade preserves administrator login and decrypts the original Root CA key.")
+    assert "Only one CA is permitted per server" in page, "A second local CA must be rejected."
+    print("Upgrade preserves MFA and the original CA key; a second local CA is rejected.")
 else:
     credentials = {"username": "smoke-admin", "password": secrets.token_urlsafe(32)}
     credential_file.write_text(json.dumps(credentials), encoding="utf-8")
@@ -98,6 +122,7 @@ else:
         "organization": "PKIMaster package smoke test",
     })
     assert "Installation complete" in page, "The web-only initial setup failed."
+    complete_authentication(credentials)
     assert all(cookie.secure for cookie in cookies), "HTTPS sessions must use Secure cookies."
     page = post("/authorities", {
         "name": "Smoke Root CA", "role": "root", "common_name": "Smoke Root CA",

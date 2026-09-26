@@ -12,8 +12,8 @@
       <label>CRL validity (days) <input name="crl_days" type="number" min="1" max="30" value="{{ request.form.get('crl_days', settings.crl_days) }}" required></label>
       <label>Session inactivity timeout (minutes) <input name="session_minutes" type="number" min="5" max="480" value="{{ request.form.get('session_minutes', settings.session_minutes) }}" required></label>
     </div>
-    <label><input name="allow_key_export" type="checkbox" style="width:auto" {% if settings.allow_key_export %}checked{% endif %}> Allow administrators to download private keys</label>
-    <p class="muted">Private-key downloads are audited. Operators and auditors cannot download keys.</p>
+    <label><input name="allow_key_export" type="checkbox" style="width:auto" {% if settings.allow_key_export %}checked{% endif %}> Allow administrators to download end-entity private keys</label>
+    <p class="muted">End-entity key downloads are audited. CA private keys can never be downloaded. Operators and auditors cannot download keys.</p>
     <h3>HTTPS service</h3>
     <div class="grid">
       <label>Listen address <input name="listen_address" value="{{ request.form.get('listen_address', settings.listen_address) }}" required></label>

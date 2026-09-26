@@ -131,6 +131,12 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                 if table in tables:
                     for row in connection.execute(f"SELECT private_key_pem FROM {table} WHERE private_key_pem IS NOT NULL AND private_key_pem != ''"):
                         cipher.decrypt(row[0].encode("utf-8"))
+            if "users" in tables:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+                for column in ("mfa_secret", "mfa_pending_secret"):
+                    if column in columns:
+                        for row in connection.execute(f"SELECT {column} FROM users WHERE {column} IS NOT NULL"):
+                            cipher.decrypt(row[0].encode("utf-8"))
     except (sqlite3.Error, InvalidToken, ValueError, AttributeError) as exc:
         raise RuntimeError("The supplied encryption secret cannot decrypt the existing PKI. Restore the original secret before migrating.") from exc
 
@@ -155,7 +161,7 @@ def audit_event(action: str, object_type: str = "", object_id: str = "", detail:
 
 def can_manage(*roles: str) -> bool:
     user = getattr(g, "user", None)
-    return bool(user and user["role"] in (roles or ("admin",)))
+    return bool(user and user["mfa_secret"] and session.get("mfa_verified") is True and user["role"] in (roles or ("admin",)))
 
 
 def require_roles(*roles: str):
@@ -316,6 +322,9 @@ def _start_session(user) -> None:
     session["user_id"] = user["id"]
     session["session_version"] = user["session_version"]
     session["last_seen"] = int(time.time())
+    session["first_factor_at"] = int(time.time())
+    session["password_authenticated"] = True
+    session["mfa_verified"] = False
     g.user = user
 
 
@@ -352,8 +361,16 @@ def init_enterprise(app) -> None:
             );
             CREATE INDEX IF NOT EXISTS audit_events_created_idx ON audit_events(created_at);
         """)
+        connection.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+        for name, definition in (("mfa_secret", "TEXT"), ("mfa_pending_secret", "TEXT"),
+                                 ("mfa_pending_created", "INTEGER"), ("mfa_last_counter", "INTEGER NOT NULL DEFAULT -1")):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
         connection.executemany("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", DEFAULT_SETTINGS.items())
     app.register_blueprint(enterprise)
+    from mfa import mfa
+    app.register_blueprint(mfa)
 
     @app.before_request
     def enforce_access():
@@ -376,8 +393,12 @@ def init_enterprise(app) -> None:
         if user_id:
             user = _db().execute("SELECT * FROM users WHERE id = ? AND active = 1", (user_id,)).fetchone()
             timeout = int(get_setting("session_minutes")) * 60
-            if (user and user["session_version"] == session.get("session_version")
+            if (user and session.get("password_authenticated") is True and user["session_version"] == session.get("session_version")
                     and time.time() - session.get("last_seen", 0) < timeout):
+                verified = session.get("mfa_verified") is True and bool(user["mfa_secret"])
+                if not verified and time.time() - session.get("first_factor_at", 0) >= 600:
+                    session.clear()
+                    return redirect(url_for("enterprise.login"))
                 g.user = user
                 session["last_seen"] = int(time.time())
                 session.permanent = True
@@ -392,7 +413,11 @@ def init_enterprise(app) -> None:
                 return Response("Cross-origin form submission is not allowed.", status=403)
             if not validate_csrf():
                 return Response("The form expired or its security token is invalid. Reload the page and try again.", status=403)
-        admin_endpoints = {"create_authority", "revoke_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users"}
+        factor_endpoints = {"mfa.enroll", "mfa.challenge", "enterprise.logout"}
+        if g.user and not (session.get("mfa_verified") is True and g.user["mfa_secret"]) and endpoint not in factor_endpoints:
+            return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
+        admin_endpoints = {"create_authority", "revoke_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
+                           "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate"}
         operator_endpoints = {"create_certificate", "revoke_certificate"}
         if endpoint in admin_endpoints and not can_manage("admin"):
             abort(403)
@@ -401,7 +426,7 @@ def init_enterprise(app) -> None:
         if endpoint in {"download_authority", "download_certificate"} and (request.view_args or {}).get("artifact") == "key":
             if not can_manage("admin") or not get_setting("allow_key_export"):
                 abort(403)
-        known_mutations = admin_endpoints | operator_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.logout", "enterprise.password"}
+        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password"}
         if request.method not in {"GET", "HEAD", "OPTIONS"} and endpoint not in known_mutations:
             abort(403)
 
@@ -445,8 +470,8 @@ def setup():
             audit_event("installation.completed", "user", str(cursor.lastrowid))
             db.commit()
             _start_session(g.user)
-            flash("Installation complete. Your administrator account is ready.")
-            return redirect(url_for("index"))
+            flash("Installation complete. Enroll your authenticator to finish securing the administrator account.")
+            return redirect(url_for("mfa.enroll"))
         except ValueError as exc:
             flash(str(exc))
             return render_template("setup.html", title="Set up PKIMaster"), 400
@@ -479,9 +504,9 @@ def login():
         if user and user["active"] and valid_password:
             db.execute("DELETE FROM login_throttles WHERE bucket = ?", (buckets[0],))
             _start_session(user)
-            audit_event("session.login", "user", str(user["id"]))
+            audit_event("session.password_verified", "user", str(user["id"]))
             db.commit()
-            return redirect(url_for("index"))
+            return redirect(url_for("mfa.challenge" if user["mfa_secret"] else "mfa.enroll"))
         for bucket, entry in zip(buckets, entries):
             attempts = entry["attempts"] + 1 if entry and now - entry["window_started"] < 900 else 1
             window_started = entry["window_started"] if entry and now - entry["window_started"] < 900 else now
@@ -496,10 +521,12 @@ def login():
 
 @enterprise.post("/logout")
 def logout():
-    audit_event("session.logout", "user", str(g.user["id"]))
-    # A copied signed cookie must not remain usable after an explicit sign-out.
-    _db().execute("UPDATE users SET session_version = session_version + 1 WHERE id = ?", (g.user["id"],))
-    _db().commit()
+    if session.get("mfa_verified") is True and g.user["mfa_secret"]:
+        audit_event("session.logout", "user", str(g.user["id"]))
+        # Verified sign-out invalidates copied cookies. An incomplete login must
+        # not let a password-only actor revoke other fully authenticated sessions.
+        _db().execute("UPDATE users SET session_version = session_version + 1 WHERE id = ?", (g.user["id"],))
+        _db().commit()
     session.clear()
     return redirect(url_for("enterprise.login"))
 

@@ -89,11 +89,13 @@
         border-collapse: collapse;
       }
       th, td {
-        padding: .7rem 0;
+        padding: .7rem .7rem .7rem 0;
         border-bottom: 1px solid #e2e8f0;
         text-align: left;
         vertical-align: top;
       }
+      .audit-table td:first-child { white-space: nowrap; }
+      .audit-table td:nth-child(5) { overflow-wrap: anywhere; min-width: 12rem; }
       .pill {
         display: inline-block;
         padding: .2rem .55rem;
@@ -136,7 +138,7 @@
     <header>
       <h1>PKIMaster</h1>
       {% if current_user %}<p>{{ settings.organization }}</p>{% endif %}
-      <p>Manage Root, Intermediate, and Issuing CAs from one Debian-friendly Python web application.</p>
+      <p>One server. One certificate authority. Separate keys for every trust tier.</p>
       {% if current_user %}
       <nav aria-label="Main navigation">
         <a href="{{ url_for('index') }}">Certificates</a>

@@ -8,40 +8,48 @@
 
 **Private PKI for Debian, managed entirely through your browser.**
 
-PKIMaster is a self-hosted private PKI (public key infrastructure) platform for Debian 13, delivered as an APT package with web-only setup and configuration. Manage Root, Intermediate, and Issuing certificate authorities, sign certificate requests, issue and revoke certificates, and publish signed certificate revocation lists from one console. User roles, encrypted private-key storage, and audit logging support controlled administration of your organization's internal certificates.
+PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. Each dedicated server runs exactly one Root, Intermediate, or Issuing CA. Separate CA servers exchange CSRs, signed certificates, public chains and CRLs; their private keys remain separate. Mandatory MFA, independent approval of subordinate CA requests, role-based access and audit logging protect administration.
+
+**BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and blocking gaps](docs/BSI-READINESS.md) before evaluating production use. HSM support, complete separation of trusted roles, protected external audit retention and operational certification remain outstanding.
+
+## One CA per server
+
+```mermaid
+flowchart LR
+  Root["Server A: Root CA"] -->|Sign CSR| Issuing["Server B: Issuing CA"]
+  Issuing -->|Issue certificates| Services["Applications and devices"]
+```
+
+An optional Intermediate CA runs on another dedicated server. SQLite guards reject a second local CA, and startup refuses legacy databases containing multiple local CAs without deleting any data. Parent servers retain only the public certificates they issue for remote CAs. CA private keys cannot be exported through the web console.
+
+Use the [browser workflow and migration instructions](docs/BSI-READINESS.md#browser-workflow) to establish the hierarchy. At least two administrator accounts on each signing parent are required: one submits the child CSR and another approves it. On the child, import the signed certificate, public parent chain and current signed parent CRLs; verify the root fingerprint through a trusted channel. Missing or stale parent CRLs block signing.
 
 ## Screenshots
 
-These screenshots show the web console running with local demo data for a fictional organization.
+Current web console with fictional demo data and one local Issuing CA. The Root runs separately; only its public chain and signed CRL are imported.
 
-**Certificate inventory** — The auditor view shows the CA hierarchy, issued certificates, revocation status, and upcoming expirations.
-
-![PKIMaster certificate inventory with Root, Intermediate, and Issuing CAs, five certificates, and expiry statistics](docs/screenshots/certificate-inventory.png)
+![Certificate inventory with exactly one local CA and five demo certificates](docs/screenshots/certificate-inventory.png)
 
 <details>
-<summary>CA creation and certificate issuance</summary>
+<summary>Certificate issuance</summary>
 
-Create certificate authorities and issue certificates with a selected profile, DNS/IP subject alternative names, and a policy-limited validity period. Existing certificate requests can also be signed through the web form.
+Issue certificates through the server's single CA, using certificate requests, certificate profiles and bounded validity.
 
-![PKIMaster administrator forms for creating a CA and issuing a certificate](docs/screenshots/certificate-issuance.png)
+![Certificate issuance through the local Issuing CA](docs/screenshots/certificate-issuance.png)
 
 </details>
 
 <details>
 <summary>Web-only configuration</summary>
 
-Manage organization settings, certificate and CRL lifetimes, session timeout, private-key export policy, and the HTTPS listener from the browser.
-
-![PKIMaster web settings for organization, PKI policy, and HTTPS service configuration](docs/screenshots/web-configuration.png)
+![Web configuration for organization, PKI policy and HTTPS service](docs/screenshots/web-configuration.png)
 
 </details>
 
 <details>
 <summary>Audit log</summary>
 
-Review account activity, CA creation, certificate issuance and revocation, and CRL publication with timestamps and actor information.
-
-![PKIMaster audit log showing demo account activity and certificate lifecycle events](docs/screenshots/audit-log.png)
+![Audit history including MFA, CA activation, parent CRL import and certificate lifecycle events](docs/screenshots/audit-log.png)
 
 </details>
 
@@ -66,7 +74,7 @@ ssh -L 8443:127.0.0.1:8443 administrator@pki-server
 
 Open **https://localhost:8443/setup** in your browser. The initial certificate is self-signed, so the browser will ask you to trust it. Use a local connection or an SSH connection to a server whose host key you have verified for initial setup.
 
-Create the first administrator and organization through the setup page. There are no default credentials. Setup accepts only loopback connections and closes permanently after the first administrator is created.
+Create the first administrator and organization through the setup page. There are no default credentials. Setup accepts only loopback connections and closes permanently after the first administrator is created. All users must enroll a SHA-256 TOTP authenticator (six digits, 30 seconds) before accessing the PKI. Store the enrollment key securely: automated MFA recovery is not yet available.
 
 ## Web-only configuration
 
@@ -78,13 +86,13 @@ Set the public base URL before issuing certificates if relying parties should di
 
 ## Certificate management
 
-- Root, Intermediate, and Issuing CAs with enforced hierarchy and path-length constraints.
+- One local Root, Intermediate, or Issuing CA per dedicated server, with CSR-based external signing and enforced path-length constraints.
 - TLS server, TLS client, or combined certificate profiles; DNS and IP SANs, including validated IDNA names.
 - Sign an existing PEM CSR to keep its private key outside the service, or generate an RSA4096 key. CSR signatures and key strength are checked, and arbitrary requested extensions are not copied.
 - Issued validity never exceeds issuer validity or the configured leaf lifetime limit. Expired, revoked, or not-yet-valid ancestors block issuance.
 - Certificate and subordinate CA revocation with reasons, signed DER CRLs, monotonically increasing CRL numbers, and cache invalidation on revocation.
-- Disabling a root stops issuance in its subtree. Administrators must also remove that root from relying-party trust stores to withdraw external trust.
-- Certificate and chain downloads, searchable paginated inventory, and expiry counts. Private-key exports are disabled by default, restricted to administrators when enabled, and audited.
+- Disabling the local CA stops its signing. Revoke a subordinate on its parent server and distribute the new CRL. Remove a distrusted root from relying-party trust stores. Disconnected servers learn parent revocation only when updated CRLs are imported.
+- Certificate and chain downloads, searchable paginated inventory, and expiry counts. Generated end-entity key exports are disabled by default, restricted to administrators when enabled, and audited. CA key exports are always forbidden.
 
 Revocation is permanent in this version, including the `certificate_hold` reason. Relying parties must be configured to check CRLs; publication alone does not make clients enforce revocation. CRLs are refreshed on request and cannot be signed by expired CAs.
 
@@ -92,11 +100,11 @@ Revocation is permanent in this version, including the `certificate_hold` reason
 
 | Role | Permissions |
 | --- | --- |
-| Administrator | Manage CAs, issue/revoke certificates, manage users and settings, view audit history, export keys when policy allows |
+| Administrator | Manage CAs, issue/revoke certificates, manage users and settings, view audit history, export end-entity keys when policy allows |
 | Operator | Issue/revoke end-entity certificates and view inventory/audit history |
 | Auditor | View inventory, public certificate/chain downloads, and audit history |
 
-Administrators create and deactivate accounts and reset passwords in **Users**. All users can change their own password. Deactivation and password changes invalidate existing sessions; the last enabled administrator cannot be deactivated. Sessions use secure cookies in the packaged service, all mutations require CSRF protection, and login failures are throttled in shared persistent storage.
+Administrators create and deactivate accounts and reset passwords in **Users**. All users can change their own password. Deactivation and password changes invalidate existing sessions; the last enabled administrator cannot be deactivated. Sessions use secure cookies in the packaged service, all mutations require CSRF protection, and password and TOTP failures are throttled in shared persistent storage. Successful TOTP codes cannot be replayed; password reset retains MFA.
 
 CA and generated certificate keys are encrypted at rest using an installation-specific secret. Session and encryption secrets are generated separately, stored with private file permissions, and preserved across restarts and package upgrades. Startup fails if an existing database's encryption secret is missing or incompatible. The independent HTTPS server identity is stored in a private PEM file so the service can start unattended.
 
@@ -119,7 +127,7 @@ sudo systemctl start pkimaster
 
 Restore the complete directory with ownership `_pkimaster:_pkimaster`, directory mode `0700`, and private file modes before starting the service. Package removal and purge deliberately retain the state directory and its system user to avoid destroying CA keys.
 
-Existing source installations are upgraded in place by starting the new code against their existing database and original encryption secret. The first upgraded startup imports legacy secrets from the original environment or development secret files and persists them; it never silently replaces encryption secrets. Schema changes are additive. Moving an existing installation into the Debian service is an explicit migration: stop the old service, back up and migrate its complete state into `/var/lib/pkimaster`, and restore ownership before enabling the packaged service. Do not generate a new encryption secret for existing CA data.
+Existing **single-CA** source installations can be upgraded in place using their original database and encryption secret. Multi-CA installations are blocked and require a reviewed migration before upgrading; see [migration boundaries](docs/BSI-READINESS.md#existing-installations-and-migration). The first upgraded startup imports legacy secrets from the original environment or development secret files and persists them; it never silently replaces encryption secrets. Schema changes are additive. Moving an existing installation into the Debian service is an explicit migration: stop the old service, back up and migrate its complete state into `/var/lib/pkimaster`, and restore ownership before enabling the packaged service. Do not generate a new encryption secret for existing CA data.
 
 ## Development and verification
 
@@ -155,4 +163,4 @@ Install local CI tooling with `python -m pip install -r requirements-ci.txt`. Th
 
 ## Current scope
 
-This is a single-host private-PKI implementation with enterprise administration foundations. HSM/PKCS#11 integration, offline-root ceremonies, approval workflows, MFA/SSO, ACME/SCEP/EST enrollment, OCSP, automatic renewal, high availability, and external tamper-evident audit retention are not implemented. Those capabilities and a dedicated security review are needed before claiming a complete enterprise PKI platform.
+This is a developing private PKI with separate CA hosts. It is not BSI-certified or a complete implementation of TR-03145. [The readiness matrix](docs/BSI-READINESS.md) records implemented controls and blocking gaps, including HSM integration, comprehensive dual control, protected external audit retention, operational governance, recovery and independent assessment. SSO, ACME/SCEP/EST, OCSP, automated parent CRL synchronization, CA rollover and high availability are also not implemented.

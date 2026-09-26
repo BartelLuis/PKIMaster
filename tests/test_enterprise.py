@@ -18,6 +18,7 @@ from flask import Flask
 
 from app import create_app, encrypt_private_key, get_db
 from enterprise import configure_runtime, get_setting
+from mfa_helpers import complete_mfa
 
 
 class EnterpriseTestCase(unittest.TestCase):
@@ -46,6 +47,7 @@ class EnterpriseTestCase(unittest.TestCase):
         result = self.post("/setup", {"username": "admin", "password": self.password,
                                       "password_confirm": self.password, "organization": "Example Enterprise"})
         self.assertEqual(result.status_code, 302, result.data)
+        complete_mfa(self.client, self.app, base_url="http://localhost")
 
     def create_user(self, username="reader", role="auditor"):
         response = self.post("/users", {"action": "create", "username": username, "role": role, "password": self.password})
@@ -57,6 +59,7 @@ class EnterpriseTestCase(unittest.TestCase):
         client = self.app.test_client()
         result = self.post("/login", {"username": username, "password": password or self.password}, client=client)
         self.assertEqual(result.status_code, 302, result.data)
+        complete_mfa(client, self.app, username, base_url="http://localhost")
         return client
 
     def settings_data(self, **updates):

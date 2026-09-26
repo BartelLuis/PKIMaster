@@ -27,7 +27,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-APPLICATION_MODULES = {"app", "enterprise", "pki", "pkimaster_server", "wsgi"}
+APPLICATION_MODULES = {"app", "enterprise", "mfa", "pki", "pkimaster_server", "wsgi"}
 
 
 def require(condition: bool, message: str) -> None:

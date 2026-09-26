@@ -1,75 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:1rem;">
-  <section class="card stat">Authorities<strong>{{ authorities|length }}</strong></section>
+  <section class="card stat">Local CA<strong>{{ authorities|length }} / 1</strong></section>
   <section class="card stat">Certificates<strong>{{ counts['total'] }}</strong></section>
   <section class="card stat">Expiring in 30 days<strong>{{ counts['expiring'] }}</strong></section>
   <section class="card stat">Revoked / expired<strong>{{ counts['revoked'] }} / {{ counts['expired'] }}</strong></section>
 </div>
-{% if can_manage('admin', 'operator') %}
-<div class="grid">
-  {% if can_manage('admin') %}
-  <section class="card">
-    <h2>Create CA</h2>
-    <form method="post" action="{{ url_for('create_authority') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>Name<input name="name" required maxlength="100" placeholder="Operations Root"></label>
-      <label>Role<select name="role"><option value="root">Root</option><option value="intermediate">Intermediate</option><option value="issuing">Issuing</option></select></label>
-      <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="Operations Root CA"></label>
-      <label>Parent CA<select name="parent_id">
-        <option value="">No parent (self-signed root)</option>
-        {% for authority in authorities if authority['role'] != 'issuing' and authority['id'] in active_authority_ids %}
-        <option value="{{ authority['id'] }}">{{ authority['name'] }} / {{ authority['role'] }}</option>
-        {% endfor %}
-      </select></label>
-      <label>Validity in days<input name="validity_days" type="number" min="1" max="7300" value="3650" required></label>
-      <p class="muted">Subordinate validity is limited to its parent's expiration.</p>
-      <button type="submit">Create CA</button>
-    </form>
-  </section>
-  {% endif %}
-  <section class="card">
-    <h2>Issue certificate</h2>
-    <form method="post" action="{{ url_for('create_certificate') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="service.internal"></label>
-      <label>Issuing authority<select name="authority_id" required>
-        {% for authority in issuing_authorities %}<option value="{{ authority['id'] }}">{{ authority['name'] }}</option>{% endfor %}
-      </select></label>
-      <label>Profile<select name="profile"><option value="server">TLS server</option><option value="client">TLS client</option><option value="dual">TLS server and client</option></select></label>
-      <label>DNS names and IP addresses<textarea name="subject_alt_names" rows="2" placeholder="service.internal, 10.0.0.10"></textarea></label>
-      <details><summary>Sign an existing certificate request (CSR)</summary>
-        <label>PEM certificate request<textarea name="csr_pem" rows="5" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea></label>
-        <p class="muted">The private key stays with the CSR owner. Names entered above override CSR names; other requested extensions are not copied.</p>
-      </details>
-      <label>Validity in days<input name="validity_days" type="number" min="1" max="{{ max_leaf_days }}" value="{{ [397, max_leaf_days]|min }}" required></label>
-      <button type="submit" {% if not issuing_authorities %}disabled{% endif %}>Issue certificate</button>
-    </form>
-    {% if not issuing_authorities %}<p class="muted">An active Issuing CA is required.</p>{% endif %}
-    {% if not key_download_enabled %}<p class="muted">Private-key export is restricted. Use a CSR to retain your own key.</p>{% endif %}
-  </section>
-</div>
-{% endif %}
+{% include "ca_console.html" %}
+{% if can_manage('admin', 'operator') and authority and authority['role'] == 'issuing' %}
 <section class="card" style="margin-top:1rem;">
-  <h2>Managed certificate authorities</h2>
-  {% if authorities %}
-  <div class="table-scroll"><table>
-    <thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Parent</th><th>Downloads</th></tr></thead>
-    <tbody>{% for authority in authorities %}<tr>
-      <td><a href="{{ url_for('authority_detail', authority_id=authority['id']) }}">{{ authority['name'] }}</a></td>
-      <td><span class="pill">{{ authority['role'] }}</span></td>
-      <td>{% if authority['id'] in active_authority_ids %}<span class="pill status-active">Active</span>{% else %}<span class="pill status-revoked">Inactive</span>{% endif %}</td>
-      <td>{{ authority['parent_name'] or 'Self-signed' }}</td>
-      <td class="actions">
-        <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">Certificate</a>
-        <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">Chain</a>
-        <a href="{{ url_for('download_crl', authority_id=authority['id']) }}">CRL</a>
-        {% if key_download_enabled %}<a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">Key</a>{% endif %}
-      </td>
-    </tr>{% endfor %}</tbody>
-  </table></div>
-  {% else %}<p class="muted">Create a Root CA to start building your trust hierarchy.</p>{% endif %}
+  <h2>Issue certificate</h2>
+  <p>Signing authority: <strong>{{ authority['name'] }}</strong>. All issuance uses this server's single CA.</p>
+  <form method="post" action="{{ url_for('create_certificate') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
+    <div class="grid">
+      <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="service.corp.example"></label>
+      <label>Profile<select name="profile"><option value="server">TLS server</option><option value="client">TLS client</option><option value="dual">TLS server and client</option></select></label>
+    </div>
+    <label>DNS names and IP addresses<textarea name="subject_alt_names" rows="2" placeholder="service.corp.example, 10.0.0.10"></textarea></label>
+    <label>PEM certificate request (CSR)<textarea name="csr_pem" rows="5" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea></label>
+    <p class="muted">Use a CSR to keep the certificate's private key on its destination system. Without a CSR, a software key is generated here. CA private keys can never be downloaded.</p>
+    <label>Validity in days<input name="validity_days" type="number" min="1" max="{{ max_leaf_days }}" value="{{ [397, max_leaf_days]|min }}" required></label>
+    <button type="submit" {% if not issuing_authorities %}disabled{% endif %}>Issue certificate</button>
+  </form>
 </section>
+{% endif %}
 <section class="card" style="margin-top:1rem;">
   <h2>Issued certificates</h2>
   <form method="get" class="compact" role="search">

@@ -39,7 +39,7 @@ def main() -> None:
     with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as archive:
         members = {str(PurePosixPath(member.name)): member for member in archive.getmembers()}
     required_files = {
-        "usr/lib/pkimaster/app.py", "usr/lib/pkimaster/enterprise.py",
+        "usr/lib/pkimaster/app.py", "usr/lib/pkimaster/enterprise.py", "usr/lib/pkimaster/mfa.py",
         "usr/lib/pkimaster/pki.py", "usr/lib/pkimaster/pkimaster_server.py",
         "usr/lib/pkimaster/templates/base.html", "usr/lib/pkimaster/templates/index.html",
         "usr/lib/pkimaster/templates/setup.html", "usr/lib/pkimaster/templates/login.html",

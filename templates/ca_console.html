@@ -1,0 +1,116 @@
+<section class="card">
+  <h2>Local certificate authority</h2>
+  {% if authority %}
+  <p><a href="{{ url_for('authority_detail', authority_id=authority['id']) }}"><strong>{{ authority['name'] }}</strong></a>
+    <span class="pill">{{ authority['role'] }}</span>
+    <span class="pill {{ 'status-revoked' if block_reason else 'status-active' }}">{{ 'Signing blocked' if block_reason else 'Operational' }}</span></p>
+  <p class="muted">This is the only CA on this server. Other trust tiers run on separate servers. Its private key cannot be exported through the console.</p>
+  {% if block_reason %}<p role="status">{{ block_reason }}</p>{% endif %}
+  <p class="actions">
+    {% if authority['csr_pem'] %}<a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='csr') }}">Download CA CSR</a>{% endif %}
+    {% if authority['state'] == 'active' %}
+    <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">CA certificate</a>
+    <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">CA chain</a>
+    <a href="{{ url_for('download_crl', authority_id=authority['id']) }}">CRL (DER)</a>
+    <a href="{{ url_for('download_crl', authority_id=authority['id'], format='pem') }}">CRL (PEM)</a>
+    {% endif %}
+  </p>
+  {% if can_manage('admin') and authority['state'] == 'pending' and not authority['revoked_at'] %}
+  <h3>Activate this CA</h3>
+  <p>Have the parent server sign the downloaded CSR. Import the returned certificate and its parent chain. Verify the root fingerprint through a trusted channel before importing.</p>
+  <form method="post" action="{{ url_for('activate_authority') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Signed local CA certificate (PEM)<textarea name="certificate_pem" rows="5" required></textarea></label>
+    <label>Parent certificates (PEM, immediate issuer first, root last)<textarea name="chain_pem" rows="6" required></textarea></label>
+    <label>Trusted root SHA-256 fingerprint<input name="trusted_root_sha256" required minlength="64" maxlength="95" placeholder="Obtain through your trusted verification channel"></label>
+    <button type="submit">Validate and import CA certificate</button>
+  </form>
+  {% endif %}
+  {% if can_manage('admin') and authority['state'] == 'active' and authority['role'] != 'root' %}
+  <details {% if block_reason %}open{% endif %}><summary>Parent revocation status</summary>
+    <p>Import a current, signed full CRL from every parent server, immediate issuer first and root last. Missing, expired, or revoked parent status blocks issuance. Re-import before the CRLs expire.</p>
+    <form method="post" action="{{ url_for('update_parent_crls') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Parent CRLs (PEM)<textarea name="parent_crls_pem" rows="6" required></textarea></label>
+      <button type="submit">Validate and import parent CRLs</button>
+    </form>
+  </details>
+  {% endif %}
+  {% elif can_manage('admin') %}
+  <p>Initialize exactly one CA on this server. Choose a Root CA, or generate a CSR for an Intermediate or Issuing CA whose parent runs on another server. This identity cannot be replaced through the console.</p>
+  <form method="post" action="{{ url_for('create_authority') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="grid">
+      <label>Name<input name="name" required maxlength="100" placeholder="Operations Issuing CA"></label>
+      <label>Role<select name="role"><option value="issuing">Issuing — external parent</option><option value="intermediate">Intermediate — external parent</option><option value="root">Root — self-signed</option></select></label>
+    </div>
+    <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="Operations Issuing CA"></label>
+    <label>Root validity in days (subordinate validity is assigned by the parent)<input name="validity_days" type="number" min="1" max="7300" value="3650" required></label>
+    <button type="submit">Initialize this server's CA</button>
+  </form>
+  {% else %}<p>A security administrator must initialize this server's CA.</p>{% endif %}
+</section>
+
+{% if authority and authority['role'] != 'issuing' %}
+{% if can_manage('admin') %}
+<section class="card" style="margin-top:1rem;">
+  <h2>Request subordinate CA signing</h2>
+  <p>Submit a CSR generated on the subordinate CA's own server. A different administrator must review and approve the request. No subordinate private key is generated or stored here.</p>
+  <form method="post" action="{{ url_for('sign_subordinate') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Subordinate role<select name="role"><option value="issuing">Issuing</option>{% if authority['role'] == 'root' %}<option value="intermediate">Intermediate</option>{% endif %}</select></label>
+    <label>Subordinate CSR (PEM)<textarea name="csr_pem" rows="5" required></textarea></label>
+    <label>Requested validity in days<input name="validity_days" type="number" min="1" max="7300" value="365" required></label>
+    <button type="submit" {% if block_reason %}disabled{% endif %}>Submit for independent approval</button>
+  </form>
+</section>
+{% endif %}
+<section class="card" style="margin-top:1rem;">
+  <h2>CA signing requests</h2>
+  <p class="muted">Most recent 100 requests. Approval signs the exact recorded CSR and policy shown below.</p>
+  {% for entry in ca_requests %}
+  <details><summary>#{{ entry['id'] }} — {{ entry['common_name'] }} — {{ entry['status'] }}</summary>
+    <p>Requested by {{ entry['requester'] }} · {{ entry['role'] }} · {{ entry['validity_days'] }} days</p>
+    <p>CSR SHA-256: <span class="mono">{{ entry['fingerprint'] }}</span></p>
+    <label>Recorded CSR<textarea rows="6" readonly>{{ entry['csr_pem'] }}</textarea></label>
+    {% if entry['status'] == 'pending' and can_manage('admin') %}
+    {% if entry['requested_by'] != current_user['id'] %}
+    <form method="post" action="{{ url_for('approve_subordinate', request_id=entry['id']) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <p>Verify the CSR fingerprint and the requester’s authorization through your established approval procedure.</p>
+      <button type="submit" {% if block_reason %}disabled{% endif %}>Approve and sign this CA request</button>
+    </form>
+    {% else %}<p>A different administrator must approve your request.</p>{% endif %}
+    <form method="post" action="{{ url_for('reject_subordinate', request_id=entry['id']) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="danger">Reject request</button>
+    </form>
+    {% endif %}
+  </details>
+  {% else %}<p>No CA signing requests.</p>{% endfor %}
+</section>
+<section class="card" style="margin-top:1rem;">
+  <h2>Issued subordinate CA certificates</h2>
+  <p class="muted">Public certificates for CAs on other servers. This server holds no private keys for them. Most recent 100 certificates.</p>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Common name</th><th>Role</th><th>Status / expires</th><th>Artifacts</th></tr></thead>
+    <tbody>{% for entry in issued_authorities %}<tr>
+      <td>{{ entry['common_name'] }}</td><td>{{ entry['role'] }}</td>
+      <td>{{ 'Revoked' if entry['revoked_at'] else 'Issued' }}<br>{{ entry['not_after'][:10] }}</td>
+      <td class="actions">
+        <a href="{{ url_for('download_subordinate', subordinate_id=entry['id'], artifact='cert') }}">Certificate</a>
+        <a href="{{ url_for('download_subordinate', subordinate_id=entry['id'], artifact='parents') }}">Parent chain</a>
+        {% if can_manage('admin') and not entry['revoked_at'] %}
+        <details><summary>Revoke</summary>
+          <form method="post" action="{{ url_for('revoke_subordinate', subordinate_id=entry['id']) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>Reason<select name="reason">{% for reason in revocation_reasons %}<option value="{{ reason }}">{{ reason|replace('_', ' ') }}</option>{% endfor %}</select></label>
+            <p>Permanent. Publish and distribute the updated CRL to the subordinate server and relying parties.</p>
+            <button type="submit" class="danger">Revoke subordinate certificate</button>
+          </form>
+        </details>{% endif %}
+      </td>
+    </tr>{% else %}<tr><td colspan="4">No subordinate certificates issued.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
