@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from hmac import compare_digest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
@@ -10,7 +11,18 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from flask import Flask, Response, current_app, flash, g, redirect, render_template_string, request, url_for
+from flask import (
+    Flask,
+    Response,
+    current_app,
+    flash,
+    g,
+    redirect,
+    render_template_string,
+    request,
+    session,
+    url_for,
+)
 from werkzeug.utils import secure_filename
 
 BASE_TEMPLATE = """
@@ -194,7 +206,7 @@ INDEX_TEMPLATE = """
       </label>
       <label>Issuing authority
         <select name="authority_id" required>
-          {% for authority in authorities %}
+          {% for authority in issuing_authorities %}
             <option value="{{ authority['id'] }}">{{ authority['name'] }} · {{ authority['role'] }}</option>
           {% endfor %}
         </select>
@@ -205,10 +217,31 @@ INDEX_TEMPLATE = """
       <label>Validity in days
         <input name="validity_days" type="number" min="1" max="825" value="397" required>
       </label>
-      <button type="submit" {% if not authorities %}disabled{% endif %}>Issue certificate</button>
+      <button type="submit" {% if not issuing_authorities %}disabled{% endif %}>Issue certificate</button>
     </form>
+    {% if not issuing_authorities %}
+      <p class="muted">Create an Issuing CA before generating end-entity certificates.</p>
+    {% endif %}
   </section>
 </div>
+
+<section class="card" style="margin-top:1rem;">
+  <h2>Private key access</h2>
+  {% if admin_token_configured %}
+    {% if key_download_enabled %}
+      <p class="muted">Private-key downloads are unlocked for this session.</p>
+    {% else %}
+      <form method="post" action="{{ url_for('unlock_private_keys') }}">
+        <label>Admin token
+          <input name="token" type="password" required autocomplete="current-password">
+        </label>
+        <button type="submit">Unlock private-key downloads</button>
+      </form>
+    {% endif %}
+  {% else %}
+    <p class="muted">Set <span class="mono">PKIMASTER_ADMIN_TOKEN</span> to enable private-key downloads.</p>
+  {% endif %}
+</section>
 
 <section class="card" style="margin-top:1rem;">
   <h2>Managed certificate authorities</h2>
@@ -232,8 +265,10 @@ INDEX_TEMPLATE = """
             <td>{{ authority['parent_name'] or 'Self-signed' }}</td>
             <td class="actions">
               <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">cert</a>
-              <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">key</a>
-              <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">chain</a>
+               {% if key_download_enabled %}
+                 <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">key</a>
+               {% endif %}
+               <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">chain</a>
             </td>
           </tr>
         {% endfor %}
@@ -264,7 +299,9 @@ INDEX_TEMPLATE = """
             <td class="mono">{{ certificate['subject_alt_names'] or certificate['common_name'] }}</td>
             <td class="actions">
               <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='cert') }}">cert</a>
-              <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='key') }}">key</a>
+              {% if key_download_enabled %}
+                <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='key') }}">key</a>
+              {% endif %}
               <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">chain</a>
             </td>
           </tr>
@@ -293,7 +330,9 @@ DETAIL_TEMPLATE = """
         <th>Downloads</th>
         <td class="actions">
           <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">certificate</a>
-          <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">private key</a>
+          {% if key_download_enabled %}
+            <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">private key</a>
+          {% endif %}
           <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">full chain</a>
         </td>
       </tr>
@@ -343,6 +382,11 @@ def parse_positive_int(raw_value: str, default: int, minimum: int, maximum: int)
     except (TypeError, ValueError):
         return default
     return min(max(value, minimum), maximum)
+
+
+def key_download_enabled() -> bool:
+    configured_token = current_app.config.get("ADMIN_TOKEN", "")
+    return bool(configured_token) and session.get("private_key_access") is True
 
 
 def build_subject(common_name: str) -> x509.Name:
@@ -498,6 +542,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.config.update(
         SECRET_KEY=os.environ.get("PKIMASTER_SECRET_KEY", "dev-only-change-me"),
         DATABASE=os.environ.get("PKIMASTER_DB_PATH", str(instance_path / "pkimaster.sqlite")),
+        ADMIN_TOKEN=os.environ.get("PKIMASTER_ADMIN_TOKEN", ""),
         INSTANCE_PATH=str(instance_path),
     )
     if test_config:
@@ -513,6 +558,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/")
     def index() -> str:
         authorities = list_authorities()
+        issuing_authorities = [authority for authority in authorities if authority["role"] == "issuing"]
         certificates = get_db().execute(
             """
             SELECT certificates.*, authorities.name AS authority_name
@@ -521,7 +567,14 @@ def create_app(test_config: dict | None = None) -> Flask:
             ORDER BY certificates.id DESC
             """
         ).fetchall()
-        content = render_template_string(INDEX_TEMPLATE, authorities=authorities, certificates=certificates)
+        content = render_template_string(
+            INDEX_TEMPLATE,
+            admin_token_configured=bool(app.config["ADMIN_TOKEN"]),
+            authorities=authorities,
+            certificates=certificates,
+            issuing_authorities=issuing_authorities,
+            key_download_enabled=key_download_enabled(),
+        )
         return render_template_string(BASE_TEMPLATE, title="PKIMaster", content=content)
 
     @app.get("/authorities/<int:authority_id>")
@@ -541,8 +594,22 @@ def create_app(test_config: dict | None = None) -> Flask:
             authority=authority,
             child_authorities=child_authorities,
             issued_certificates=issued_certificates,
+            key_download_enabled=key_download_enabled(),
         )
         return render_template_string(BASE_TEMPLATE, title=authority["name"], content=content)
+
+    @app.post("/unlock-private-keys")
+    def unlock_private_keys() -> Response:
+        configured_token = app.config.get("ADMIN_TOKEN", "")
+        submitted_token = request.form.get("token", "")
+        if not configured_token:
+            flash("Private-key downloads are disabled until PKIMASTER_ADMIN_TOKEN is configured.")
+        elif compare_digest(submitted_token, configured_token):
+            session["private_key_access"] = True
+            flash("Private-key downloads unlocked for this session.")
+        else:
+            flash("Invalid admin token.")
+        return redirect(url_for("index"))
 
     @app.post("/authorities")
     def create_authority() -> Response:
@@ -568,6 +635,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             parent = get_authority(int(parent_id))
             if parent is None:
                 flash("Selected parent CA does not exist.")
+                return redirect(url_for("index"))
+            if parent["role"] == "issuing":
+                flash("Issuing CAs cannot sign subordinate CAs.")
                 return redirect(url_for("index"))
         try:
             certificate_pem, private_key_pem, serial_number, not_before, not_after = create_ca_certificate(
@@ -618,6 +688,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         if authority is None:
             flash("Selected issuing authority does not exist.")
             return redirect(url_for("index"))
+        if authority["role"] != "issuing":
+            flash("End-entity certificates must be issued by an Issuing CA.")
+            return redirect(url_for("index"))
         certificate_pem, private_key_pem, serial_number, not_before, not_after = issue_end_entity_certificate(
             common_name=common_name,
             issuer_certificate_pem=authority["certificate_pem"],
@@ -655,6 +728,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         if artifact == "cert":
             return text_download(authority["name"], "crt.pem", authority["certificate_pem"])
         if artifact == "key":
+            if not key_download_enabled():
+                return Response("Forbidden", status=403)
             return text_download(authority["name"], "key.pem", authority["private_key_pem"])
         if artifact == "chain":
             return text_download(authority["name"], "chain.pem", build_ca_chain(authority_id))
@@ -669,6 +744,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         if artifact == "cert":
             return text_download(certificate["common_name"], "crt.pem", certificate["certificate_pem"])
         if artifact == "key":
+            if not key_download_enabled():
+                return Response("Forbidden", status=403)
             return text_download(certificate["common_name"], "key.pem", certificate["private_key_pem"])
         if artifact == "chain":
             chain = certificate["certificate_pem"] + build_ca_chain(certificate["authority_id"])

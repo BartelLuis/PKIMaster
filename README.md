@@ -31,6 +31,7 @@ Then open `http://127.0.0.1:8000`.
 - `PKIMASTER_PORT` default: `8000`
 - `PKIMASTER_DB_PATH` default: `instance/pkimaster.sqlite`
 - `PKIMASTER_SECRET_KEY` default: `dev-only-change-me`
+- `PKIMASTER_ADMIN_TOKEN` default: unset (private-key downloads stay disabled)
 
 ## Tests
 
