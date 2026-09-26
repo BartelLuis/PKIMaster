@@ -403,6 +403,15 @@ def allowed_ca_path_length(role: str, issuer_role: str | None = None) -> int:
     return min(role_depth, max(max_subordinate_depth(issuer_role) - 1, 0))
 
 
+def valid_parent_child_roles(parent_role: str, child_role: str) -> bool:
+    allowed_pairs = {
+        "root": {"intermediate", "issuing"},
+        "intermediate": {"issuing"},
+        "issuing": set(),
+    }
+    return child_role in allowed_pairs.get(parent_role, set())
+
+
 def private_key_cipher() -> Fernet:
     secret = current_app.config.get("KEY_ENCRYPTION_SECRET", current_app.config["SECRET_KEY"])
     key = base64.urlsafe_b64encode(hashlib.sha256(str(secret).encode("utf-8")).digest())
@@ -585,13 +594,17 @@ def create_app(test_config: dict | None = None) -> Flask:
     if test_config:
         app.config.update(test_config)
     if not app.config.get("TESTING"):
+        required_settings = {
+            "SECRET_KEY": "PKIMASTER_SECRET_KEY",
+            "KEY_ENCRYPTION_SECRET": "PKIMASTER_KEY_ENCRYPTION_SECRET",
+        }
         missing_settings = [
-            name
-            for name in ("SECRET_KEY", "KEY_ENCRYPTION_SECRET")
-            if not str(app.config.get(name, "")).strip()
+            env_name
+            for config_name, env_name in required_settings.items()
+            if not str(app.config.get(config_name, "")).strip()
         ]
         if missing_settings:
-            missing_csv = ", ".join(f"PKIMASTER_{name}" for name in missing_settings)
+            missing_csv = ", ".join(missing_settings)
             raise RuntimeError(f"Missing required security configuration: {missing_csv}")
     init_db(app)
 
@@ -682,11 +695,8 @@ def create_app(test_config: dict | None = None) -> Flask:
             if parent is None:
                 flash("Selected parent CA does not exist.")
                 return redirect(url_for("index"))
-            if parent["role"] == "issuing":
-                flash("Issuing CAs cannot sign subordinate CAs.")
-                return redirect(url_for("index"))
-            if role == "intermediate" and parent["role"] != "root":
-                flash("Intermediate CAs must be signed directly by a Root CA.")
+            if not valid_parent_child_roles(parent["role"], role):
+                flash("Invalid CA hierarchy. Allowed pairs are Root → Intermediate/Issuing and Intermediate → Issuing.")
                 return redirect(url_for("index"))
         try:
             certificate_pem, private_key_pem, serial_number, not_before, not_after = create_ca_certificate(

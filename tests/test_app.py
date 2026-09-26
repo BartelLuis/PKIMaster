@@ -200,6 +200,90 @@ class PKIMasterTestCase(unittest.TestCase):
         basic_constraints = issuing_cert.extensions.get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS).value
         self.assertEqual(basic_constraints.path_length, 0)
 
+    def test_invalid_ca_hierarchy_is_rejected(self) -> None:
+        self.client.post(
+            "/authorities",
+            data={
+                "name": "Hierarchy Root",
+                "role": "root",
+                "common_name": "Hierarchy Root CA",
+                "parent_id": "",
+                "validity_days": "3650",
+            },
+            follow_redirects=True,
+        )
+
+        with self.app.app_context():
+            import app as app_module
+
+            root = app_module.get_db().execute("SELECT id FROM authorities WHERE name = ?", ("Hierarchy Root",)).fetchone()
+
+        self.client.post(
+            "/authorities",
+            data={
+                "name": "Hierarchy Intermediate",
+                "role": "intermediate",
+                "common_name": "Hierarchy Intermediate CA",
+                "parent_id": str(root["id"]),
+                "validity_days": "1825",
+            },
+            follow_redirects=True,
+        )
+
+        with self.app.app_context():
+            import app as app_module
+
+            intermediate = app_module.get_db().execute(
+                "SELECT id FROM authorities WHERE name = ?", ("Hierarchy Intermediate",)
+            ).fetchone()
+
+        invalid_intermediate = self.client.post(
+            "/authorities",
+            data={
+                "name": "Nested Intermediate",
+                "role": "intermediate",
+                "common_name": "Nested Intermediate CA",
+                "parent_id": str(intermediate["id"]),
+                "validity_days": "1825",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(invalid_intermediate.status_code, 200)
+        self.assertIn(b"Invalid CA hierarchy", invalid_intermediate.data)
+
+        self.client.post(
+            "/authorities",
+            data={
+                "name": "Hierarchy Issuing",
+                "role": "issuing",
+                "common_name": "Hierarchy Issuing CA",
+                "parent_id": str(root["id"]),
+                "validity_days": "1825",
+            },
+            follow_redirects=True,
+        )
+
+        with self.app.app_context():
+            import app as app_module
+
+            issuing = app_module.get_db().execute(
+                "SELECT id FROM authorities WHERE name = ?", ("Hierarchy Issuing",)
+            ).fetchone()
+
+        invalid_issuing = self.client.post(
+            "/authorities",
+            data={
+                "name": "Nested Issuing",
+                "role": "issuing",
+                "common_name": "Nested Issuing CA",
+                "parent_id": str(issuing["id"]),
+                "validity_days": "1825",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(invalid_issuing.status_code, 200)
+        self.assertIn(b"Invalid CA hierarchy", invalid_issuing.data)
+
 
 if __name__ == "__main__":
     unittest.main()
