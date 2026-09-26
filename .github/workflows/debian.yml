@@ -1,0 +1,80 @@
+name: Debian package
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Build and smoke-test Debian 13 package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container: debian:13
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install distribution build and test dependencies
+        run: |
+          mkdir -p dist
+          if compgen -G 'dist/pkimaster_*.deb' > /dev/null; then
+            echo 'The build must start without existing package artifacts.' >&2
+            exit 1
+          fi
+          apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update 2>&1 | tee dist/debian-dependencies.log
+          apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+            build-essential debhelper python3 python3-flask python3-cryptography \
+            python3-werkzeug gunicorn curl systemd 2>&1 | tee -a dist/debian-dependencies.log
+
+      - name: Build with Debian dependencies and run unit tests
+        id: build
+        run: sh scripts/build-deb.sh 2>&1 | tee dist/debian-build.log
+
+      - name: Verify package metadata, contents and checksums
+        id: verify
+        run: python3 scripts/check-debian-package.py 2>&1 | tee dist/debian-package.log
+
+      - name: Verify installation, HTTPS startup and state preservation
+        env:
+          PACKAGE_FILE: ${{ steps.verify.outputs.package }}
+        run: sh scripts/smoke-deb.sh "$PACKAGE_FILE" 2>&1 | tee dist/debian-smoke.log
+
+      - name: Upload package and build metadata
+        if: ${{ always() && steps.verify.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pkimaster-debian13-${{ steps.verify.outputs.version }}
+          path: |
+            dist/pkimaster_*.deb
+            dist/pkimaster_*.buildinfo
+            dist/pkimaster_*.changes
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build and smoke diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pkimaster-debian13-logs
+          path: dist/*.log
+          if-no-files-found: warn
+          retention-days: 14

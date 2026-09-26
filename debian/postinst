@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        adduser --system --group --home /var/lib/pkimaster --no-create-home \
+            --shell /usr/sbin/nologin --quiet _pkimaster
+        install -d -m 0700 -o _pkimaster -g _pkimaster /var/lib/pkimaster
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

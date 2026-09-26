@@ -1,0 +1,40 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 10
+    # Preserve supported lower bounds when a compatible update can widen a range.
+    versioning-strategy: widen
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      python-runtime-minor-patch:
+        patterns: [Flask, flask, cryptography, Werkzeug, werkzeug, gunicorn]
+        update-types: [minor, patch]
+      python-tooling-minor-patch:
+        patterns: [build, setuptools, coverage, twine, ruff, pip-audit, check-jsonschema]
+        update-types: [minor, patch]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]

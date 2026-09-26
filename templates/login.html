@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  {% if change_password %}
+  <h2>Change your password</h2>
+  <form method="post" action="{{ url_for('enterprise.password') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Current password <input name="current_password" type="password" required autocomplete="current-password" maxlength="256"></label>
+    <label>New password or passphrase <input name="password" type="password" required autocomplete="new-password" minlength="14" maxlength="256"></label>
+    <label>Confirm new password <input name="password_confirm" type="password" required autocomplete="new-password" minlength="14" maxlength="256"></label>
+    <p class="muted">Changing your password signs out every session, including this one.</p>
+    <button type="submit">Change password</button>
+  </form>
+  {% else %}
+  <h2>Sign in to {{ settings.organization }}</h2>
+  <form method="post" action="{{ url_for('enterprise.login') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Username <input name="username" required autocomplete="username" maxlength="64"></label>
+    <label>Password <input name="password" type="password" required autocomplete="current-password" maxlength="256"></label>
+    <button type="submit">Sign in</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

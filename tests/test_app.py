@@ -16,13 +16,21 @@ class PKIMasterTestCase(unittest.TestCase):
         self.app = create_app(
             {
                 "TESTING": True,
-                "ADMIN_TOKEN": "admin-token",
                 "SECRET_KEY": "test-secret",
+                "KEY_ENCRYPTION_SECRET": "test-encryption-secret",
+                "SESSION_COOKIE_SECURE": False,
                 "DATABASE": str(Path(self.temp_dir.name) / "pkimaster.sqlite"),
                 "INSTANCE_PATH": self.temp_dir.name,
             }
         )
         self.client = self.app.test_client()
+        page = self.client.get("/setup")
+        token = re.search(rb'name="csrf_token" value="([^"]+)"', page.data).group(1).decode()
+        response = self.client.post("/setup", data={
+            "csrf_token": token, "username": "admin", "password": "test-passphrase-123",
+            "password_confirm": "test-passphrase-123", "organization": "Test PKI",
+        }, follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
 
     def csrf_token(self) -> str:
         response = self.client.get("/")
@@ -47,6 +55,13 @@ class PKIMasterTestCase(unittest.TestCase):
         health = self.client.get("/healthz")
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json["status"], "ok")
+
+    def test_out_of_range_certificate_ids_return_not_found(self) -> None:
+        huge_id = "9" * 100
+        for path in (f"/crl/{huge_id}.crl", f"/authorities/{huge_id}",
+                     f"/authorities/{huge_id}/cert", f"/certificates/{huge_id}/cert"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path).status_code, 404)
 
     def test_root_intermediate_and_certificate_flow(self) -> None:
         root_response = self.post(
@@ -149,9 +164,9 @@ class PKIMasterTestCase(unittest.TestCase):
         forbidden_key = self.client.get("/certificates/1/key")
         self.assertEqual(forbidden_key.status_code, 403)
 
-        unlock = self.post("/unlock-private-keys", {"token": "admin-token"})
+        unlock = self.post("/settings", {"organization": "Test PKI", "allow_key_export": "on"})
         self.assertEqual(unlock.status_code, 200)
-        self.assertIn(b"unlocked for this session", unlock.data)
+        self.assertIn(b"Settings saved", unlock.data)
 
         allowed_key = self.client.get("/certificates/1/key")
         self.assertEqual(allowed_key.status_code, 200)
@@ -292,7 +307,7 @@ class PKIMasterTestCase(unittest.TestCase):
         self.assertEqual(invalid_issuing.status_code, 200)
         self.assertIn(b"Invalid CA hierarchy", invalid_issuing.data)
 
-    def test_invalid_admin_token_keeps_private_key_downloads_locked(self) -> None:
+    def test_private_key_export_disabled_by_default(self) -> None:
         root_response = self.post(
             "/authorities",
             {
@@ -304,10 +319,6 @@ class PKIMasterTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(root_response.status_code, 200)
-
-        invalid_unlock = self.post("/unlock-private-keys", {"token": "wrong-token"})
-        self.assertEqual(invalid_unlock.status_code, 200)
-        self.assertIn(b"Invalid admin token", invalid_unlock.data)
 
         forbidden_key = self.client.get("/authorities/1/key")
         self.assertEqual(forbidden_key.status_code, 403)
@@ -401,8 +412,9 @@ class PKIMasterTestCase(unittest.TestCase):
                 "SELECT certificate_pem FROM certificates WHERE common_name = ?", ("default.internal",)
             ).fetchone()
 
-        self.assertEqual(self.validity_days(upper_cert["certificate_pem"]), 825)
-        self.assertEqual(self.validity_days(default_cert_row["certificate_pem"]), 397)
+        # Both requested lifetimes are capped by this issuing CA's remaining life.
+        self.assertEqual(self.validity_days(upper_cert["certificate_pem"]), 365)
+        self.assertEqual(self.validity_days(default_cert_row["certificate_pem"]), 365)
 
 
 if __name__ == "__main__":

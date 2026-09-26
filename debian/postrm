@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# Keep /var/lib/pkimaster and its dedicated user even on purge. Losing either
+# the encryption secrets or CA keys makes existing encrypted PKI data unusable.
+# Removing the user would also risk its UID being reassigned to another service.
+#DEBHELPER#
+
+exit 0

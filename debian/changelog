@@ -1,0 +1,7 @@
+pkimaster (0.2.0-1) trixie; urgency=medium
+
+  * Package the web-managed PKI console as a hardened HTTPS systemd service.
+  * Use Debian Python dependencies without an installation-time pip download.
+  * Preserve CA keys, administrator accounts and audit data across upgrades.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sat, 26 Sep 2026 10:00:00 +0200

@@ -1,0 +1,39 @@
+[Unit]
+Description=PKIMaster HTTPS administration and PKI service
+After=network.target
+
+[Service]
+Type=simple
+User=_pkimaster
+Group=_pkimaster
+WorkingDirectory=/usr/lib/pkimaster
+ExecStart=/usr/bin/python3 /usr/lib/pkimaster/pkimaster_server.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillMode=mixed
+StateDirectory=pkimaster
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/pkimaster
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target

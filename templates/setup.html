@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Set up your PKI</h2>
+  <p>Create your first administrator and configure your organization. Initial setup is available only through a localhost connection.</p>
+  <form method="post" action="{{ url_for('enterprise.setup') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Organization <input name="organization" value="{{ request.form.get('organization', '') }}" maxlength="200" required autocomplete="organization"></label>
+    <label>Public HTTPS base URL <input name="public_base_url" type="url" placeholder="https://pki.example.com:8443" value="{{ request.form.get('public_base_url', '') }}"></label>
+    <p class="muted">Used for certificate revocation URLs. Set this before issuing certificates so relying systems can reach your CRLs.</p>
+    <label>Administrator username <input name="username" value="{{ request.form.get('username', '') }}" minlength="3" maxlength="64" required autocomplete="username"></label>
+    <label>Password or passphrase <input name="password" type="password" minlength="14" maxlength="256" required autocomplete="new-password"></label>
+    <label>Confirm password <input name="password_confirm" type="password" minlength="14" maxlength="256" required autocomplete="new-password"></label>
+    <p class="muted">Use at least 14 characters. There are no default credentials. Private-key downloads are disabled initially.</p>
+    <button type="submit">Create administrator and complete setup</button>
+  </form>
+</section>
+{% endblock %}

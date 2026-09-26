@@ -68,6 +68,22 @@
         cursor: pointer;
       }
       button:hover { background: #1d4ed8; }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      nav { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-top: 1.25rem; }
+      nav a { color: #bfdbfe; }
+      nav form { margin-left: auto; }
+      nav button { width: auto; margin: 0; padding: .4rem .8rem; }
+      .danger { background: #b91c1c; }
+      .danger:hover { background: #991b1b; }
+      .status-revoked, .status-expired { background: #fee2e2; color: #991b1b; }
+      .status-active { background: #dcfce7; color: #166534; }
+      .table-scroll { overflow-x: auto; }
+      td, th { padding-right: 1rem; }
+      .stat strong { font-size: 2rem; display: block; margin: .5rem 0; }
+      .compact { display: flex; gap: .5rem; align-items: center; }
+      .compact button { width: auto; white-space: nowrap; }
+      input[type=checkbox] { width: auto; }
+      details > summary { cursor: pointer; color: var(--accent); margin: .75rem 0; }
       table {
         width: 100%;
         border-collapse: collapse;
@@ -119,7 +135,24 @@
   <body>
     <header>
       <h1>PKIMaster</h1>
+      {% if current_user %}<p>{{ settings.organization }}</p>{% endif %}
       <p>Manage Root, Intermediate, and Issuing CAs from one Debian-friendly Python web application.</p>
+      {% if current_user %}
+      <nav aria-label="Main navigation">
+        <a href="{{ url_for('index') }}">Certificates</a>
+        <a href="{{ url_for('enterprise.audit') }}">Audit log</a>
+        {% if can_manage('admin') %}
+        <a href="{{ url_for('enterprise.settings') }}">Settings</a>
+        <a href="{{ url_for('enterprise.users') }}">Users</a>
+        {% endif %}
+        <a href="{{ url_for('enterprise.password') }}">Password</a>
+        <span>{{ current_user['username'] }} / {{ current_user['role'] }}</span>
+        <form method="post" action="{{ url_for('enterprise.logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit">Sign out</button>
+        </form>
+      </nav>
+      {% endif %}
     </header>
     <main>
       {% with messages = get_flashed_messages() %}

@@ -1,0 +1,19 @@
+Source: pkimaster
+Section: admin
+Priority: optional
+Maintainer: PKIMaster maintainers <maintainers@pkimaster.de>
+Build-Depends: debhelper-compat (= 13), python3 (>= 3.11), python3-flask (>= 3.1), python3-cryptography (>= 43), python3-werkzeug (>= 3.1), gunicorn (>= 23)
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+
+Package: pkimaster
+Architecture: all
+Depends: ${misc:Depends}, python3 (>= 3.11), python3-flask (>= 3.1), python3-cryptography (>= 43), python3-werkzeug (>= 3.1), gunicorn (>= 23), adduser
+Description: web-managed public key infrastructure service
+ Manage Root, Intermediate and Issuing certificate authorities through an
+ authenticated HTTPS console with role-based access, audit logging and
+ certificate revocation. All application configuration is performed in the
+ web console. The service initially listens on https://127.0.0.1:8443.
+ .
+ Certificate authority keys and application state are retained on removal
+ and purge to prevent accidental destruction of the public key infrastructure.

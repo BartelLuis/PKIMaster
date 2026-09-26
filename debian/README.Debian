@@ -1,0 +1,28 @@
+PKIMaster for Debian 13
+======================
+
+Install the package with:
+  sudo apt install ./pkimaster_0.2.0-1_all.deb
+
+Open https://127.0.0.1:8443/setup on the server, or forward the console from
+your workstation:
+  ssh -L 8443:127.0.0.1:8443 your-server
+
+The automatically generated localhost certificate is self-signed. Complete
+the first administrator setup, then use the Settings page to choose the HTTPS
+listener address/port and upload a trusted server certificate and private key.
+Listener/TLS changes are picked up automatically within a few seconds and
+restart the HTTPS workers. This can briefly interrupt browser connections.
+No environment secrets or human-edited configuration files are required.
+
+Runtime state, including encrypted CA keys, generated encryption secrets,
+accounts and audit events, lives in /var/lib/pkimaster (mode 0700). Back up this
+entire directory consistently while the service is stopped; the database
+alone is insufficient to recover encrypted keys. State and the dedicated
+_pkimaster system account are retained on both package removal and purge.
+
+The service runs as _pkimaster with systemd sandboxing. Logs are available via:
+  journalctl -u pkimaster
+
+The supported package target is Debian 13 (trixie). Dependencies are provided
+by APT; package installation never invokes pip or downloads Python packages.

@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: PKIMaster
+Source: Local PKIMaster source repository
+
+Files: *
+Copyright: PKIMaster contributors
+License: unspecified
+ No redistribution license has been supplied in this source repository.
+ This packaging metadata does not grant any additional rights.

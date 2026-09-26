@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Create user</h2>
+  <p class="muted">Administrators manage CAs, settings, and users. Operators issue and revoke leaf certificates. Auditors have read access. All roles can view audit events.</p>
+  <form method="post" action="{{ url_for('enterprise.users') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="create">
+    <label>Username <input name="username" minlength="3" maxlength="64" required autocomplete="off"></label>
+    <label>Initial password or passphrase <input name="password" type="password" minlength="14" maxlength="256" required autocomplete="new-password"></label>
+    <label>Role <select name="role"><option value="auditor">Auditor</option><option value="operator">Operator</option><option value="admin">Administrator</option></select></label>
+    <button type="submit">Create user</button>
+  </form>
+</section>
+<section class="card" style="margin-top:1rem">
+  <h2>User accounts</h2>
+  {% for user in users %}
+  <article style="padding:1rem 0;border-bottom:1px solid var(--border)">
+    <h3>{{ user.username }} <span class="pill">{{ user.role }}</span> <span class="muted">{{ 'Active' if user.active else 'Disabled' }}</span></h3>
+    <div class="grid">
+      <form method="post" action="{{ url_for('enterprise.users') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="{{ 'deactivate' if user.active else 'activate' }}">
+        <button type="submit">{{ 'Deactivate' if user.active else 'Activate' }} account</button>
+      </form>
+      <form method="post" action="{{ url_for('enterprise.users') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="reset_password">
+        <label>New password <input name="password" type="password" minlength="14" maxlength="256" required autocomplete="new-password"></label>
+        <button type="submit">Reset password and revoke sessions</button>
+      </form>
+    </div>
+  </article>
+  {% endfor %}
+  <p class="muted">The last active administrator cannot be deactivated. Deactivating an account immediately revokes its sessions.</p>
+</section>
+{% endblock %}

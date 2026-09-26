@@ -1,0 +1,10 @@
+* text=auto
+*.py text eol=lf
+*.html text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+debian/* text eol=lf
+debian/source/* text eol=lf
+debian/rules text eol=lf
+debian/postinst text eol=lf
+debian/postrm text eol=lf

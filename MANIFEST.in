@@ -1,0 +1,6 @@
+include README.md
+recursive-include templates *.html
+recursive-include debian *
+recursive-include scripts *.sh
+recursive-include scripts *.py
+recursive-include tests *.py

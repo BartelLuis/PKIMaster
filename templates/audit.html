@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Audit log</h2>
+  <p class="muted">Times are UTC. Events record account changes, PKI operations, policy changes, and key downloads.</p>
+  <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Object</th><th>Details</th><th>Source</th></tr></thead>
+      <tbody>{% for event in events %}<tr><td>{{ event.created_at }}</td><td>{{ event.actor_name }}</td><td>{{ event.action }}</td><td>{{ event.object_type }} {{ event.object_id }}</td><td>{{ event.detail }}</td><td>{{ event.remote_addr }}</td></tr>{% else %}<tr><td colspan="6">No audit events yet.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% if next_before %}<p><a href="{{ url_for('enterprise.audit', before=next_before) }}">Older events</a></p>{% endif %}
+</section>
+{% endblock %}

@@ -4,6 +4,8 @@
   <p><a href="{{ url_for('index') }}">← Back to dashboard</a></p>
   <h2>{{ authority['name'] }}</h2>
   <p><span class="pill">{{ authority['role'] }}</span></p>
+  <p><span class="pill {{ 'status-active' if active else 'status-revoked' }}">{{ 'Active' if active else 'Inactive' }}</span></p>
+  {% if authority['revoked_at'] %}<p>Revoked {{ authority['revoked_at'] }}: {{ authority['revocation_reason']|replace('_', ' ') }}</p>{% endif %}
   <table>
     <tbody>
       <tr><th>Subject</th><td class="mono">{{ authority['common_name'] }}</td></tr>
@@ -19,10 +21,22 @@
             <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">private key</a>
           {% endif %}
           <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">full chain</a>
+          <a href="{{ url_for('download_crl', authority_id=authority['id']) }}">revocation list (CRL)</a>
         </td>
       </tr>
     </tbody>
   </table>
+  {% if can_manage('admin') and not authority['revoked_at'] %}
+  <details><summary>Revoke this authority</summary>
+    <p>Revocation disables issuance throughout this authority's hierarchy. This cannot be undone.</p>
+    {% if authority['parent_id'] %}<p>This CA will be added to its parent's CRL.</p>{% else %}<p>This root must also be removed from relying-party trust stores. Disabling it here cannot revoke external trust.</p>{% endif %}
+    <form method="post" action="{{ url_for('revoke_authority', authority_id=authority['id']) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Reason<select name="reason">{% for reason in revocation_reasons %}<option value="{{ reason }}">{{ reason|replace('_', ' ') }}</option>{% endfor %}</select></label>
+      <button type="submit" class="danger">Revoke authority</button>
+    </form>
+  </details>
+  {% endif %}
 </section>
 
 <div class="grid" style="margin-top:1rem;">
