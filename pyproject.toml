@@ -15,3 +15,6 @@ dependencies = [
 
 [project.scripts]
 pkimaster-dev = "app:main"
+
+[tool.setuptools]
+py-modules = ["app", "wsgi"]

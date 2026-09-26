@@ -158,7 +158,7 @@ class PKIMasterTestCase(unittest.TestCase):
         self.assertEqual(issued_cert.issuer, issuing_cert.subject)
 
     def test_direct_root_to_issuing_ca_uses_zero_path_length(self) -> None:
-        self.client.post(
+        root_response = self.client.post(
             "/authorities",
             data={
                 "name": "Direct Root",
@@ -169,6 +169,8 @@ class PKIMasterTestCase(unittest.TestCase):
             },
             follow_redirects=True,
         )
+        self.assertEqual(root_response.status_code, 200)
+        self.assertIn(b"Created root CA", root_response.data)
 
         with self.app.app_context():
             import app as app_module
@@ -201,7 +203,7 @@ class PKIMasterTestCase(unittest.TestCase):
         self.assertEqual(basic_constraints.path_length, 0)
 
     def test_invalid_ca_hierarchy_is_rejected(self) -> None:
-        self.client.post(
+        root_response = self.client.post(
             "/authorities",
             data={
                 "name": "Hierarchy Root",
@@ -212,13 +214,15 @@ class PKIMasterTestCase(unittest.TestCase):
             },
             follow_redirects=True,
         )
+        self.assertEqual(root_response.status_code, 200)
+        self.assertIn(b"Created root CA", root_response.data)
 
         with self.app.app_context():
             import app as app_module
 
             root = app_module.get_db().execute("SELECT id FROM authorities WHERE name = ?", ("Hierarchy Root",)).fetchone()
 
-        self.client.post(
+        intermediate_response = self.client.post(
             "/authorities",
             data={
                 "name": "Hierarchy Intermediate",
@@ -229,6 +233,8 @@ class PKIMasterTestCase(unittest.TestCase):
             },
             follow_redirects=True,
         )
+        self.assertEqual(intermediate_response.status_code, 200)
+        self.assertIn(b"Created intermediate CA", intermediate_response.data)
 
         with self.app.app_context():
             import app as app_module
@@ -251,7 +257,7 @@ class PKIMasterTestCase(unittest.TestCase):
         self.assertEqual(invalid_intermediate.status_code, 200)
         self.assertIn(b"Invalid CA hierarchy", invalid_intermediate.data)
 
-        self.client.post(
+        issuing_response = self.client.post(
             "/authorities",
             data={
                 "name": "Hierarchy Issuing",
@@ -262,6 +268,8 @@ class PKIMasterTestCase(unittest.TestCase):
             },
             follow_redirects=True,
         )
+        self.assertEqual(issuing_response.status_code, 200)
+        self.assertIn(b"Created issuing CA", issuing_response.data)
 
         with self.app.app_context():
             import app as app_module

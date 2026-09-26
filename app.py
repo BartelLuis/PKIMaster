@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import secrets
 import sqlite3
 from hmac import compare_digest
 from datetime import UTC, datetime, timedelta
@@ -21,359 +22,12 @@ from flask import (
     flash,
     g,
     redirect,
-    render_template_string,
+    render_template,
     request,
     session,
     url_for,
 )
 from werkzeug.utils import secure_filename
-
-BASE_TEMPLATE = """
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ title }}</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --bg: #0f172a;
-        --surface: #ffffff;
-        --muted: #475569;
-        --accent: #2563eb;
-        --accent-soft: #dbeafe;
-        --border: #dbe1ea;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        font-family: Inter, system-ui, sans-serif;
-        background: linear-gradient(180deg, #e2e8f0 0%, #f8fafc 100%);
-        color: #0f172a;
-      }
-      header {
-        background: var(--bg);
-        color: white;
-        padding: 2rem 1.5rem;
-      }
-      header h1, header p { margin: 0; }
-      header p { margin-top: .75rem; max-width: 60rem; color: #cbd5e1; }
-      main {
-        max-width: 1100px;
-        margin: -1.5rem auto 2rem;
-        padding: 0 1rem;
-      }
-      .grid {
-        display: grid;
-        gap: 1rem;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      }
-      .card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 18px;
-        padding: 1.25rem;
-        box-shadow: 0 14px 30px rgba(15, 23, 42, .06);
-      }
-      h2, h3 { margin-top: 0; }
-      label {
-        display: block;
-        font-size: .95rem;
-        color: var(--muted);
-        margin-bottom: .75rem;
-      }
-      input, select, textarea, button {
-        width: 100%;
-        margin-top: .35rem;
-        border-radius: 12px;
-        border: 1px solid #cbd5e1;
-        padding: .8rem .9rem;
-        font: inherit;
-      }
-      button {
-        background: var(--accent);
-        color: white;
-        border: none;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      button:hover { background: #1d4ed8; }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th, td {
-        padding: .7rem 0;
-        border-bottom: 1px solid #e2e8f0;
-        text-align: left;
-        vertical-align: top;
-      }
-      .pill {
-        display: inline-block;
-        padding: .2rem .55rem;
-        border-radius: 999px;
-        background: var(--accent-soft);
-        color: var(--accent);
-        font-size: .8rem;
-        font-weight: 700;
-        text-transform: uppercase;
-      }
-      .flash {
-        list-style: none;
-        padding: 0;
-        margin: 0 0 1rem;
-      }
-      .flash li {
-        padding: .85rem 1rem;
-        border-radius: 14px;
-        margin-bottom: .65rem;
-        border: 1px solid #bfdbfe;
-        background: #eff6ff;
-        color: #1d4ed8;
-      }
-      .actions a {
-        margin-right: .75rem;
-        color: var(--accent);
-        text-decoration: none;
-      }
-      .muted { color: var(--muted); }
-      .mono {
-        font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Consolas, monospace;
-        word-break: break-all;
-      }
-      @media (max-width: 720px) {
-        main { margin-top: -1rem; }
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <h1>PKIMaster</h1>
-      <p>Manage Root, Intermediate, and Issuing CAs from one Debian-friendly Python web application.</p>
-    </header>
-    <main>
-      {% with messages = get_flashed_messages() %}
-        {% if messages %}
-          <ul class="flash">
-            {% for message in messages %}
-              <li>{{ message }}</li>
-            {% endfor %}
-          </ul>
-        {% endif %}
-      {% endwith %}
-      {{ content|safe }}
-    </main>
-  </body>
-</html>
-"""
-
-INDEX_TEMPLATE = """
-<div class="grid">
-  <section class="card">
-    <h2>Create CA</h2>
-    <form method="post" action="{{ url_for('create_authority') }}">
-      <label>Name
-        <input name="name" required maxlength="100" placeholder="Operations Root">
-      </label>
-      <label>Role
-        <select name="role">
-          <option value="root">Root</option>
-          <option value="intermediate">Intermediate</option>
-          <option value="issuing">Issuing</option>
-        </select>
-      </label>
-      <label>Certificate common name
-        <input name="common_name" required maxlength="255" placeholder="Operations Root CA">
-      </label>
-      <label>Parent CA
-        <select name="parent_id">
-          <option value="">No parent (self-signed root)</option>
-          {% for authority in authorities %}
-            <option value="{{ authority['id'] }}">{{ authority['name'] }} · {{ authority['role'] }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Validity in days
-        <input name="validity_days" type="number" min="1" max="7300" value="3650" required>
-      </label>
-      <button type="submit">Create CA</button>
-    </form>
-  </section>
-
-  <section class="card">
-    <h2>Issue Certificate</h2>
-    <form method="post" action="{{ url_for('create_certificate') }}">
-      <label>Certificate common name
-        <input name="common_name" required maxlength="255" placeholder="service.internal">
-      </label>
-      <label>Issuing authority
-        <select name="authority_id" required>
-          {% for authority in issuing_authorities %}
-            <option value="{{ authority['id'] }}">{{ authority['name'] }} · {{ authority['role'] }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>DNS Subject Alternative Names
-        <textarea name="subject_alt_names" rows="4" placeholder="service.internal, api.service.internal"></textarea>
-      </label>
-      <label>Validity in days
-        <input name="validity_days" type="number" min="1" max="825" value="397" required>
-      </label>
-      <button type="submit" {% if not issuing_authorities %}disabled{% endif %}>Issue certificate</button>
-    </form>
-    {% if not issuing_authorities %}
-      <p class="muted">Create an Issuing CA before generating end-entity certificates.</p>
-    {% endif %}
-  </section>
-</div>
-
-<section class="card" style="margin-top:1rem;">
-  <h2>Private key access</h2>
-  {% if admin_token_configured %}
-    {% if key_download_enabled %}
-      <p class="muted">Private-key downloads are unlocked for this session.</p>
-    {% else %}
-      <form method="post" action="{{ url_for('unlock_private_keys') }}">
-        <label>Admin token
-          <input name="token" type="password" required autocomplete="current-password">
-        </label>
-        <button type="submit">Unlock private-key downloads</button>
-      </form>
-    {% endif %}
-  {% else %}
-    <p class="muted">Set <span class="mono">PKIMASTER_ADMIN_TOKEN</span> to enable private-key downloads.</p>
-  {% endif %}
-</section>
-
-<section class="card" style="margin-top:1rem;">
-  <h2>Managed certificate authorities</h2>
-  {% if authorities %}
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Role</th>
-          <th>Subject</th>
-          <th>Parent</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for authority in authorities %}
-          <tr>
-            <td><a href="{{ url_for('authority_detail', authority_id=authority['id']) }}">{{ authority['name'] }}</a></td>
-            <td><span class="pill">{{ authority['role'] }}</span></td>
-            <td class="mono">{{ authority['common_name'] }}</td>
-            <td>{{ authority['parent_name'] or 'Self-signed' }}</td>
-            <td class="actions">
-              <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">cert</a>
-               {% if key_download_enabled %}
-                 <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">key</a>
-               {% endif %}
-               <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">chain</a>
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p class="muted">Create a Root CA to start building your trust hierarchy.</p>
-  {% endif %}
-</section>
-
-<section class="card" style="margin-top:1rem;">
-  <h2>Issued end-entity certificates</h2>
-  {% if certificates %}
-    <table>
-      <thead>
-        <tr>
-          <th>Common name</th>
-          <th>Issued by</th>
-          <th>SANs</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for certificate in certificates %}
-          <tr>
-            <td class="mono">{{ certificate['common_name'] }}</td>
-            <td>{{ certificate['authority_name'] }}</td>
-            <td class="mono">{{ certificate['subject_alt_names'] or certificate['common_name'] }}</td>
-            <td class="actions">
-              <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='cert') }}">cert</a>
-              {% if key_download_enabled %}
-                <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='key') }}">key</a>
-              {% endif %}
-              <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">chain</a>
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p class="muted">Issued certificates will appear here.</p>
-  {% endif %}
-</section>
-"""
-
-DETAIL_TEMPLATE = """
-<section class="card">
-  <p><a href="{{ url_for('index') }}">← Back to dashboard</a></p>
-  <h2>{{ authority['name'] }}</h2>
-  <p><span class="pill">{{ authority['role'] }}</span></p>
-  <table>
-    <tbody>
-      <tr><th>Subject</th><td class="mono">{{ authority['common_name'] }}</td></tr>
-      <tr><th>Serial</th><td class="mono">{{ authority['serial_number'] }}</td></tr>
-      <tr><th>Parent</th><td>{{ authority['parent_name'] or 'Self-signed' }}</td></tr>
-      <tr><th>Valid from</th><td>{{ authority['not_before'] }}</td></tr>
-      <tr><th>Valid to</th><td>{{ authority['not_after'] }}</td></tr>
-      <tr>
-        <th>Downloads</th>
-        <td class="actions">
-          <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">certificate</a>
-          {% if key_download_enabled %}
-            <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='key') }}">private key</a>
-          {% endif %}
-          <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">full chain</a>
-        </td>
-      </tr>
-    </tbody>
-  </table>
-</section>
-
-<div class="grid" style="margin-top:1rem;">
-  <section class="card">
-    <h3>Child CAs</h3>
-    {% if child_authorities %}
-      <ul>
-        {% for child in child_authorities %}
-          <li><a href="{{ url_for('authority_detail', authority_id=child['id']) }}">{{ child['name'] }}</a> · {{ child['role'] }}</li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="muted">No subordinate CAs yet.</p>
-    {% endif %}
-  </section>
-  <section class="card">
-    <h3>Issued certificates</h3>
-    {% if issued_certificates %}
-      <ul>
-        {% for certificate in issued_certificates %}
-          <li>
-            <span class="mono">{{ certificate['common_name'] }}</span>
-            · <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">download chain</a>
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="muted">No certificates issued from this authority yet.</p>
-    {% endif %}
-  </section>
-</div>
-"""
-
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -626,15 +280,15 @@ def create_app(test_config: dict | None = None) -> Flask:
             ORDER BY certificates.id DESC
             """
         ).fetchall()
-        content = render_template_string(
-            INDEX_TEMPLATE,
+        return render_template(
+            "index.html",
+            title="PKIMaster",
             admin_token_configured=bool(app.config["ADMIN_TOKEN"]),
             authorities=authorities,
             certificates=certificates,
             issuing_authorities=issuing_authorities,
             key_download_enabled=key_download_enabled(),
         )
-        return render_template_string(BASE_TEMPLATE, title="PKIMaster", content=content)
 
     @app.get("/authorities/<int:authority_id>")
     def authority_detail(authority_id: int) -> str:
@@ -648,14 +302,14 @@ def create_app(test_config: dict | None = None) -> Flask:
         issued_certificates = db.execute(
             "SELECT id, common_name FROM certificates WHERE authority_id = ? ORDER BY id DESC", (authority_id,)
         ).fetchall()
-        content = render_template_string(
-            DETAIL_TEMPLATE,
+        return render_template(
+            "authority_detail.html",
+            title=authority["name"],
             authority=authority,
             child_authorities=child_authorities,
             issued_certificates=issued_certificates,
             key_download_enabled=key_download_enabled(),
         )
-        return render_template_string(BASE_TEMPLATE, title=authority["name"], content=content)
 
     @app.post("/unlock-private-keys")
     def unlock_private_keys() -> Response:
@@ -810,8 +464,9 @@ def create_app(test_config: dict | None = None) -> Flask:
                 certificate["common_name"], "key.pem", decrypt_private_key(certificate["private_key_pem"])
             )
         if artifact == "chain":
-            chain = certificate["certificate_pem"] + build_ca_chain(certificate["authority_id"])
-            return text_download(certificate["common_name"], "chain.pem", chain)
+            return text_download(
+                certificate["common_name"], "chain.pem", build_certificate_chain(certificate["certificate_pem"], certificate["authority_id"])
+            )
         return Response("Not found", status=404)
 
     @app.get("/healthz")
@@ -907,6 +562,10 @@ def build_ca_chain(authority_id: int) -> str:
     return "".join(chain)
 
 
+def build_certificate_chain(certificate_pem: str, authority_id: int) -> str:
+    return certificate_pem + build_ca_chain(authority_id)
+
+
 def text_download(stem: str, suffix: str, body: str) -> Response:
     safe_name = secure_filename(stem) or "pkimaster"
     response = Response(body, mimetype="application/x-pem-file")
@@ -915,6 +574,8 @@ def text_download(stem: str, suffix: str, body: str) -> Response:
 
 
 def main() -> None:
+    os.environ.setdefault("PKIMASTER_SECRET_KEY", secrets.token_urlsafe(32))
+    os.environ.setdefault("PKIMASTER_KEY_ENCRYPTION_SECRET", secrets.token_urlsafe(32))
     development_app = create_app()
     development_app.run(
         host=os.environ.get("PKIMASTER_HOST", "127.0.0.1"),
