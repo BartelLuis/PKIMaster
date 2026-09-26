@@ -108,6 +108,8 @@ def split_pem_crl_blocks(pem: str) -> list[str]:
         if begin_marker in content or not content.strip():
             raise ValueError("Upload only PEM-encoded parent CRLs.")
         end += len(end_marker)
+        while end < len(pem) and pem[end].isspace():
+            end += 1
         blocks.append(pem[cursor:end])
         cursor = end
 
