@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card"><p class="eyebrow">Cryptographic custody</p><h2>Key storage</h2>
+<p class="muted">Choose where this server's single CA key is generated and used. External providers sign certificates, CSRs and CRLs without returning the private key.</p>
+{% if authority %}<p class="notice">This CA is permanently bound to {{ labels[authority.key_backend] }}. Only provider credentials can be updated; replacements are verified against the existing key.</p>{% endif %}
+<form method="post" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label>Signing provider<select name="backend" {% if authority %}disabled{% endif %}>{% for value,label in labels.items() %}<option value="{{ value }}" {% if value == provider.backend %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+{% if authority %}<input type="hidden" name="backend" value="{{ authority.key_backend }}">{% endif %}
+<p class="muted">Encrypted software keys and SoftHSM are software protection. Azure RSA-HSM requires a suitable Premium vault or Managed HSM; selecting Azure RSA uses software-backed keys.</p>
+<fieldset><legend>PKCS#11 / SoftHSM</legend><div class="form-grid">
+<label>Module path<input name="module_path" value="{{ provider.module_path or '/usr/lib/softhsm/libsofthsm2.so' }}" {% if authority %}readonly{% endif %}></label>
+<label>Token label<input name="token_label" value="{{ provider.token_label or '' }}" maxlength="32" {% if authority %}readonly{% endif %}></label>
+<label>User PIN<input type="password" name="user_pin" autocomplete="new-password" placeholder="{{ 'Stored; leave blank to keep' if has_pin else 'Token user PIN' }}"></label>
+{% if not authority %}<label>Existing object ID (optional, hexadecimal)<input name="key_id" value="{{ provider.key_id if provider.backend == 'pkcs11' else '' }}"></label>
+<label>Existing token serial (optional)<input name="token_serial" value="{{ provider.token_serial or '' }}"></label>{% endif %}
+</div>{% if not authority %}<label class="check"><input type="checkbox" name="initialize_token"> Initialize a new SoftHSM token when saving</label>
+<label>Security-officer PIN for new token<input type="password" name="so_pin" autocomplete="new-password"></label><p class="muted">The officer PIN is used once and is not stored. Preserve it in your key-ceremony records. Existing tokens are never reset.</p>{% endif %}</fieldset>
+<fieldset><legend>Azure Key Vault / Managed HSM</legend><div class="form-grid">
+<label>Vault URL<input name="vault_url" value="{{ provider.vault_url or '' }}" placeholder="https://your-vault.vault.azure.net" {% if authority %}readonly{% endif %}></label>
+<label>Tenant ID<input name="tenant_id" value="{{ provider.tenant_id or '' }}" {% if authority %}readonly{% endif %}></label>
+<label>Application (client) ID<input name="client_id" value="{{ provider.client_id or '' }}" {% if authority %}readonly{% endif %}></label>
+<label>Client secret<input type="password" name="client_secret" autocomplete="new-password" placeholder="{{ 'Stored; leave blank to keep' if has_client_secret else 'Application secret' }}"></label>
+<label>Key name<input name="key_name" value="{{ provider.key_name or '' }}" {% if authority %}readonly{% endif %}></label>
+<label>Protection<select name="key_type" {% if authority %}disabled{% endif %}><option value="RSA-HSM" {% if provider.key_type != 'RSA' %}selected{% endif %}>RSA-HSM — hardware protected</option><option value="RSA" {% if provider.key_type == 'RSA' %}selected{% endif %}>RSA — software protected</option></select></label>
+{% if not authority %}<label>Existing versioned key URL (optional)<input name="azure_key_id" value="{{ provider.key_id if provider.backend == 'azure' else '' }}" placeholder="https://your-vault.vault.azure.net/keys/ca-key/version"></label>{% endif %}
+</div><p class="muted">The selected key version is pinned. Vault key rotation does not silently replace a CA identity. Configure a dedicated identity with only the required key get, create (for new keys) and sign permissions.</p></fieldset>
+<button type="submit">{{ 'Verify and save credentials' if authority else 'Save key storage' }}</button>
+</form></section>
+{% endblock %}

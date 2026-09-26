@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-heading"><div><span class="eyebrow">Operational records</span><h1>Audit log</h1><p>Review account changes, PKI operations, policy changes, and key downloads.</p></div><span class="pill">All times UTC</span></div>
 <section class="card">
-  <h2>Audit log</h2>
-  <p class="muted">Times are UTC. Events record account changes, PKI operations, policy changes, and key downloads.</p>
-  <div style="overflow-x:auto">
+  <div class="section-heading"><div><h2>Recorded events</h2><p>Events appear from newest to oldest.</p></div></div>
+  <div class="table-scroll">
     <table class="audit-table">
       <thead><tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Object</th><th>Details</th><th>Source</th></tr></thead>
       <tbody>{% for event in events %}<tr><td>{{ event.created_at }}</td><td>{{ event.actor_name }}</td><td>{{ event.action }}</td><td>{{ event.object_type }} {{ event.object_id }}</td><td>{{ event.detail }}</td><td>{{ event.remote_addr }}</td></tr>{% else %}<tr><td colspan="6">No audit events yet.</td></tr>{% endfor %}</tbody>
     </table>
   </div>
-  {% if next_before %}<p><a href="{{ url_for('enterprise.audit', before=next_before) }}">Older events</a></p>{% endif %}
+  {% if next_before %}<div class="pagination"><span>Continue through the event history</span><a class="button button-secondary button-small" href="{{ url_for('enterprise.audit', before=next_before) }}">Older events</a></div>{% endif %}
 </section>
 {% endblock %}

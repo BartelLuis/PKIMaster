@@ -12,8 +12,10 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID, SignatureAlgorithmOID
+
+from key_backends import ExternalSigner, sign_builder
 
 
 REVOCATION_REASONS = {
@@ -83,6 +85,8 @@ def generate_private_key() -> rsa.RSAPrivateKey:
 
 
 def serialize_private_key(private_key: rsa.RSAPrivateKey) -> str:
+    if isinstance(private_key, ExternalSigner):
+        raise ValueError("External CA private keys cannot be exported.")
     return private_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.TraditionalOpenSSL,
@@ -176,13 +180,19 @@ def _validate_validity_days(validity_days: int) -> None:
         raise ValueError("Validity must be between 1 and 36500 days.")
 
 
-def _load_issuer(certificate_pem: str, private_key_pem: str, now: datetime, *, crl: bool = False):
+def _load_private_key(value):
+    if isinstance(value, ExternalSigner):
+        return value
+    return serialization.load_pem_private_key(value.encode("utf-8"), password=None)
+
+
+def _load_issuer(certificate_pem: str, private_key_pem: str | ExternalSigner, now: datetime, *, crl: bool = False):
     try:
         certificate = x509.load_pem_x509_certificate(certificate_pem.encode("utf-8"))
-        private_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+        private_key = _load_private_key(private_key_pem)
     except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
         raise ValueError("Invalid issuer certificate or private key.") from exc
-    if not isinstance(private_key, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey)):
+    if not isinstance(private_key, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey, ExternalSigner)):
         raise ValueError("Issuer must use an RSA or ECDSA key.")
     public_bytes = lambda key: key.public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
@@ -233,7 +243,7 @@ def _add_crl_distribution_point(builder: x509.CertificateBuilder, crl_url: str |
 def _certificate_result(certificate: x509.Certificate, private_key=None) -> tuple[str, str, str, str, str]:
     return (
         serialize_certificate(certificate),
-        serialize_private_key(private_key) if private_key is not None else "",
+        serialize_private_key(private_key) if private_key is not None and not isinstance(private_key, ExternalSigner) else "",
         hex(certificate.serial_number),
         certificate.not_valid_before_utc.isoformat(),
         certificate.not_valid_after_utc.isoformat(),
@@ -249,6 +259,7 @@ def create_ca_certificate(
     issuer_private_key_pem: str | None = None,
     *,
     crl_url: str | None = None,
+    signer: ExternalSigner | None = None,
 ) -> tuple[str, str, str, str, str]:
     subject = build_subject(common_name)
     _validate_validity_days(validity_days)
@@ -268,7 +279,7 @@ def create_ca_certificate(
     elif role != "root" or issuer_role is not None:
         raise ValueError("Only a root authority may be self-signed.")
     not_before, not_after = _validity_window(now, validity_days, issuer)
-    private_key = generate_private_key()
+    private_key = signer if signer is not None else generate_private_key()
     public_key = private_key.public_key()
     builder = (
         x509.CertificateBuilder()
@@ -287,7 +298,7 @@ def create_ca_certificate(
         .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
     )
     builder = _add_crl_distribution_point(builder, crl_url)
-    certificate = builder.sign(issuer_key or private_key, hashes.SHA256())
+    certificate = sign_builder(builder, issuer_key or private_key)
     return _certificate_result(certificate, private_key)
 
 
@@ -387,21 +398,22 @@ def _verify_exchange_link(child: x509.Certificate, parent: x509.Certificate) -> 
         raise ValueError("CA authority certificate name does not match the supplied issuer.")
 
 
-def create_ca_request(common_name: str, role: str) -> tuple[str, str]:
+def create_ca_request(common_name: str, role: str, *, signer: ExternalSigner | None = None) -> tuple[str, str]:
     """Create a subordinate CA's key and request on that CA's own server."""
     if role not in {"intermediate", "issuing"}:
         raise ValueError("Only intermediate and issuing authorities request a parent signature.")
     subject = build_subject(common_name)
-    private_key = generate_private_key()
+    private_key = signer if signer is not None else generate_private_key()
     _validate_exchange_key(private_key.public_key())
-    request = (
+    builder = (
         x509.CertificateSigningRequestBuilder()
         .subject_name(subject)
         .add_extension(x509.BasicConstraints(True, max_subordinate_depth(role)), critical=True)
         .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
-        .sign(private_key, hashes.SHA256())
     )
-    return request.public_bytes(serialization.Encoding.PEM).decode("ascii"), serialize_private_key(private_key)
+    request = sign_builder(builder, private_key)
+    private_pem = "" if isinstance(private_key, ExternalSigner) else serialize_private_key(private_key)
+    return request.public_bytes(serialization.Encoding.PEM).decode("ascii"), private_pem
 
 
 def sign_ca_request(
@@ -458,7 +470,7 @@ def sign_ca_request(
             .add_extension(x509.BasicConstraints(True, min(requested.path_length, constraints.path_length - 1)), critical=True)
             .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
         )
-        certificate = _add_crl_distribution_point(builder, crl_url).sign(issuer_key, hashes.SHA256())
+        certificate = sign_builder(_add_crl_distribution_point(builder, crl_url), issuer_key)
         result = _certificate_result(certificate)
         return result[0], result[2], result[3], result[4]
     except (InvalidSignature, UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType,
@@ -488,7 +500,7 @@ def validate_ca_activation(
                    for block in _strict_pem_blocks(chain_pem, "CERTIFICATE", 2, allow_empty=role == "root")]
         if (role == "root" and parents) or (role == "intermediate" and len(parents) != 1):
             raise ValueError("The parent chain does not match the intended CA hierarchy.")
-        private_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+        private_key = _load_private_key(private_key_pem)
         _validate_exchange_key(private_key.public_key())
         if certificate.subject != expected_subject:
             raise ValueError("The returned CA subject does not match the local certificate request.")
@@ -618,7 +630,7 @@ def issue_end_entity_certificate(
     if names:
         builder = builder.add_extension(x509.SubjectAlternativeName(names), critical=False)
     builder = _add_crl_distribution_point(builder, crl_url)
-    return _certificate_result(builder.sign(issuer_key, hashes.SHA256()), private_key)
+    return _certificate_result(sign_builder(builder, issuer_key), private_key)
 
 
 def build_crl(
@@ -663,4 +675,40 @@ def build_crl(
             .build()
         )
         builder = builder.add_revoked_certificate(revoked)
-    return builder.sign(issuer_key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+    return sign_builder(builder, issuer_key).public_bytes(serialization.Encoding.DER)
+
+
+def crl_signature_is_valid(crl: x509.CertificateRevocationList, public_key) -> bool:
+    """Verify approved CRL signatures, including PSS on Debian cryptography 43.
+
+    That release can create RSA-PSS CRLs but does not decode their hash through
+    signature_hash_algorithm. Parse the signed algorithm parameters explicitly;
+    never assume a hash, MGF, or salt length from the signature OID alone.
+    """
+    try:
+        if crl.signature_algorithm_oid == SignatureAlgorithmOID.RSASSA_PSS:
+            from asn1crypto import crl as asn1_crl
+            document = asn1_crl.CertificateList.load(crl.public_bytes(serialization.Encoding.DER), strict=True)
+            algorithm = document["signature_algorithm"]
+            if algorithm.dump() != document["tbs_cert_list"]["signature"].dump() or not isinstance(public_key, rsa.RSAPublicKey):
+                return False
+            parameters = algorithm["parameters"]
+            digest_name = parameters["hash_algorithm"]["algorithm"].native
+            digest = {"sha256": hashes.SHA256, "sha384": hashes.SHA384, "sha512": hashes.SHA512}.get(digest_name)
+            mask = parameters["mask_gen_algorithm"]
+            if (digest is None or mask["algorithm"].native != "mgf1"
+                    or mask["parameters"]["algorithm"].native != digest_name
+                    or parameters["trailer_field"].native != "trailer_field_bc"):
+                return False
+            digest = digest()
+            salt_length = parameters["salt_length"].native
+            if salt_length != digest.digest_size:
+                return False
+            public_key.verify(crl.signature, crl.tbs_certlist_bytes,
+                              padding.PSS(mgf=padding.MGF1(digest), salt_length=salt_length), digest)
+            return True
+        if not isinstance(crl.signature_hash_algorithm, (hashes.SHA256, hashes.SHA384, hashes.SHA512)):
+            return False
+        return crl.is_signature_valid(public_key)
+    except (InvalidSignature, ValueError, TypeError, KeyError, UnsupportedAlgorithm):
+        return False

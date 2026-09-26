@@ -8,9 +8,9 @@
 
 **Private PKI for Debian, managed entirely through your browser.**
 
-PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. Each dedicated server runs exactly one Root, Intermediate, or Issuing CA. Separate CA servers exchange CSRs, signed certificates, public chains and CRLs; their private keys remain separate. Mandatory MFA, independent approval of subordinate CA requests, role-based access and audit logging protect administration.
+PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. Each dedicated server runs exactly one Root, Intermediate, or Issuing CA. Separate CA servers exchange CSRs, signed certificates, public chains and CRLs; their private keys remain separate. Choose local, LDAP or OpenID Connect authentication with mandatory MFA, and encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault for CA signing. Independent approval of subordinate CA requests, explicit roles and authenticated audit chains protect administration.
 
-**BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and blocking gaps](docs/BSI-READINESS.md) before evaluating production use. HSM support, complete separation of trusted roles, protected external audit retention and operational certification remain outstanding.
+**BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
 
 ## One CA per server
 
@@ -53,13 +53,24 @@ Issue certificates through the server's single CA, using certificate requests, c
 
 </details>
 
+<details>
+<summary>Identity providers, key storage and security posture</summary>
+
+![Local, LDAP and OpenID Connect configuration](docs/screenshots/identity-providers.png)
+
+![Optional PKCS#11, SoftHSM and Azure key storage](docs/screenshots/key-storage.png)
+
+![CA security posture and verified audit evidence](docs/screenshots/security-posture.png)
+
+</details>
+
 ## Install with APT
 
 Build the package on Debian 13 (the build runs the application tests):
 
 ```sh
 sudo apt update
-sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn
+sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
 sudo apt install ./dist/pkimaster_0.2.0-1_all.deb
 ```
@@ -79,6 +90,10 @@ Create the first administrator and organization through the setup page. There ar
 ## Web-only configuration
 
 Use **Settings** for organization, publication URL, certificate lifetime limits, CRL lifetime, session timeout, private-key export policy, listen address, HTTPS port, and HTTPS certificate/key upload. New installations need no environment variables, editable configuration files, or configuration CLI.
+
+Use **Authentication** to select local accounts, LDAP (LDAPS or mandatory StartTLS) or OIDC (authorization code flow with PKCE). Administrators provision external users with their exact LDAP DN or OIDC issuer and subject; provider claims cannot create accounts or grant roles. Every provider still requires application TOTP. A separately enabled local administrator sign-in supports recovery from a provider outage. Changing authentication revokes existing sessions. See [identity and key-provider setup](docs/PROVIDERS.md).
+
+Use **Key storage** before initializing the CA to choose encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault. SoftHSM tokens can be initialized through the browser. Azure supports software-backed RSA and hardware-backed RSA-HSM, with an exact key version and public-key fingerprint pinned to the CA. Credentials are encrypted and can be replaced after proving access to the same key. The provider cannot be changed for an existing CA, and a provider outage never falls back to a software key.
 
 The listener initially binds to loopback. To enable remote access, upload a trusted server certificate and matching unencrypted PEM key, then choose the server's IP address or `0.0.0.0`/`::` and an unprivileged port (1024–65535). The packaged service applies listener and TLS changes automatically within a few seconds; reconnect at the saved address and port. Firewall and DNS administration remain part of the host/network deployment.
 
@@ -104,11 +119,11 @@ Revocation is permanent in this version, including the `certificate_hold` reason
 | Operator | Issue/revoke end-entity certificates and view inventory/audit history |
 | Auditor | View inventory, public certificate/chain downloads, and audit history |
 
-Administrators create and deactivate accounts and reset passwords in **Users**. All users can change their own password. Deactivation and password changes invalidate existing sessions; the last enabled administrator cannot be deactivated. Sessions use secure cookies in the packaged service, all mutations require CSRF protection, and password and TOTP failures are throttled in shared persistent storage. Successful TOTP codes cannot be replayed; password reset retains MFA.
+Administrators create and deactivate accounts and reset local passwords in **Users**. Local users can change their own password; external passwords remain managed by the identity provider. Deactivation and password changes invalidate existing sessions; the last enabled administrator able to use the selected authentication mode cannot be deactivated. Sessions use secure cookies in the packaged service, all forms require CSRF protection, and password and TOTP failures are throttled in shared persistent storage. Successful TOTP codes cannot be replayed; password reset retains MFA.
 
 CA and generated certificate keys are encrypted at rest using an installation-specific secret. Session and encryption secrets are generated separately, stored with private file permissions, and preserved across restarts and package upgrades. Startup fails if an existing database's encryption secret is missing or incompatible. The independent HTTPS server identity is stored in a private PEM file so the service can start unattended.
 
-Audit records cover setup, authentication, users, policy changes, issuance, revocation, CRL publication, and private-key exports. The web UI provides no audit modification/deletion operation. The SQLite audit store is **not tamper-proof against the host administrator**.
+Audit records cover setup, authentication, users, policy changes, issuance, revocation, CRL publication, and private-key exports. Records form a SHA-256 chain authenticated with HMAC and protected by append-only database guards. Startup and mutations verify integrity; **Security posture** exports verified evidence and checkpoints for independent retention. Older records are sealed at migration, which cannot establish their earlier integrity. The local store is **not tamper-proof against a host administrator with application secrets**; retain checkpoints off-host to detect rollback.
 
 ## Operations and backups
 
@@ -117,7 +132,7 @@ sudo systemctl status pkimaster
 sudo journalctl -u pkimaster
 ```
 
-State lives in `/var/lib/pkimaster`, including the SQLite database, `runtime-secrets.json`, and `server-tls/`. Back up the complete directory together; the database alone cannot recover encrypted CA keys. Stop the service for a consistent file-level backup and protect backups as CA key material:
+State lives in `/var/lib/pkimaster`, including the SQLite database, `runtime-secrets.json`, `server-tls/` and optional `softhsm/` tokens. Back up the complete directory together; the database alone cannot recover encrypted keys, provider credentials or MFA secrets. External HSM/Azure keys require the provider's separate backup, retention and recovery procedures. Stop the service for a consistent file-level backup and protect backups as CA key material:
 
 ```sh
 sudo systemctl stop pkimaster

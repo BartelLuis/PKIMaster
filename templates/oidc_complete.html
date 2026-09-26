@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="auth-symbol">{{ icon('lock') }}</div><span class="eyebrow">Identity verified</span>
+  <h1>Continue to your authenticator</h1>
+  <p>Your identity provider accepted your sign-in. Complete your PKIMaster authenticator verification to access the PKI.</p>
+  <a class="button" href="{{ factor_url }}">Continue to authenticator</a>
+</section>
+{% endblock %}

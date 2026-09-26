@@ -9,8 +9,8 @@ mkdir "$workspace/source"
 cd "$repository"
 # Stage explicitly to avoid copying local PKI state, virtual environments or
 # repository history, and to support sources on WSL's Windows filesystem.
-cp -R app.py enterprise.py mfa.py pki.py pkimaster_server.py wsgi.py pyproject.toml \
-    MANIFEST.in README.md docs templates tests debian scripts "$workspace/source/"
+cp -R app.py enterprise.py identity.py mfa.py pki.py key_backends.py key_storage.py audit_integrity.py security.py pkimaster_server.py wsgi.py pyproject.toml \
+    MANIFEST.in README.md docs templates static tests debian scripts "$workspace/source/"
 find "$workspace/source" -type f -exec chmod 0644 {} +
 chmod 0755 "$workspace/source/debian/rules" "$workspace/source/debian/postinst" "$workspace/source/debian/postrm"
 cd "$workspace/source"

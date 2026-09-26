@@ -137,6 +137,18 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                     if column in columns:
                         for row in connection.execute(f"SELECT {column} FROM users WHERE {column} IS NOT NULL"):
                             cipher.decrypt(row[0].encode("utf-8"))
+            if "settings" in tables:
+                for row in connection.execute("SELECT value FROM settings WHERE key = 'key_storage_config'"):
+                    cipher.decrypt(row[0].encode("utf-8"))
+            if "identity_settings" in tables:
+                for row in connection.execute("SELECT payload FROM identity_settings"):
+                    payload = json.loads(row[0])
+                    for field in ("oidc_client_secret", "ldap_bind_password"):
+                        if payload.get(field):
+                            cipher.decrypt(payload[field].encode("utf-8"))
+            if "oidc_flows" in tables:
+                for row in connection.execute("SELECT payload FROM oidc_flows"):
+                    cipher.decrypt(row[0].encode("utf-8"))
     except (sqlite3.Error, InvalidToken, ValueError, AttributeError) as exc:
         raise RuntimeError("The supplied encryption secret cannot decrypt the existing PKI. Restore the original secret before migrating.") from exc
 
@@ -152,11 +164,11 @@ def get_setting(key: str, default=None):
 def audit_event(action: str, object_type: str = "", object_id: str = "", detail: str = "") -> None:
     """Append to the caller's transaction. Never include passwords or key material."""
     user = getattr(g, "user", None)
-    _db().execute(
-        "INSERT INTO audit_events (actor_id, actor_name, action, object_type, object_id, detail, remote_addr) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user["id"] if user else None, user["username"] if user else "anonymous", action, object_type,
-         str(object_id), detail, request.remote_addr or ""),
-    )
+    from audit_integrity import append_event
+    append_event(_db(), current_app.config["KEY_ENCRYPTION_SECRET"],
+                 actor_id=user["id"] if user else None, actor_name=user["username"] if user else "anonymous",
+                 action=action, object_type=object_type, object_id=str(object_id), detail=detail,
+                 remote_addr=request.remote_addr or "")
 
 
 def can_manage(*roles: str) -> bool:
@@ -368,9 +380,13 @@ def init_enterprise(app) -> None:
             if name not in columns:
                 connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
         connection.executemany("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", DEFAULT_SETTINGS.items())
+        from identity import init_identity
+        init_identity(connection)
     app.register_blueprint(enterprise)
     from mfa import mfa
     app.register_blueprint(mfa)
+    from identity import identity, public_config, user_allowed
+    app.register_blueprint(identity)
 
     @app.before_request
     def enforce_access():
@@ -393,7 +409,7 @@ def init_enterprise(app) -> None:
         if user_id:
             user = _db().execute("SELECT * FROM users WHERE id = ? AND active = 1", (user_id,)).fetchone()
             timeout = int(get_setting("session_minutes")) * 60
-            if (user and session.get("password_authenticated") is True and user["session_version"] == session.get("session_version")
+            if (user and user_allowed(user) and session.get("password_authenticated") is True and user["session_version"] == session.get("session_version")
                     and time.time() - session.get("last_seen", 0) < timeout):
                 verified = session.get("mfa_verified") is True and bool(user["mfa_secret"])
                 if not verified and time.time() - session.get("first_factor_at", 0) >= 600:
@@ -405,7 +421,8 @@ def init_enterprise(app) -> None:
                 app.permanent_session_lifetime = timedelta(seconds=timeout)
             else:
                 session.clear()
-        if installed and not g.user and endpoint != "enterprise.login":
+        anonymous_endpoints = {"enterprise.login", "identity.oidc_start", "identity.oidc_callback"}
+        if installed and not g.user and endpoint not in anonymous_endpoints:
             return redirect(url_for("enterprise.login"))
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("Origin")
@@ -417,7 +434,8 @@ def init_enterprise(app) -> None:
         if g.user and not (session.get("mfa_verified") is True and g.user["mfa_secret"]) and endpoint not in factor_endpoints:
             return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
         admin_endpoints = {"create_authority", "revoke_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
-                           "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate"}
+                           "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
+                           "identity.settings", "key_storage.settings", "security.policy"}
         operator_endpoints = {"create_certificate", "revoke_certificate"}
         if endpoint in admin_endpoints and not can_manage("admin"):
             abort(403)
@@ -426,7 +444,7 @@ def init_enterprise(app) -> None:
         if endpoint in {"download_authority", "download_certificate"} and (request.view_args or {}).get("artifact") == "key":
             if not can_manage("admin") or not get_setting("allow_key_export"):
                 abort(403)
-        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password"}
+        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password", "identity.oidc_start"}
         if request.method not in {"GET", "HEAD", "OPTIONS"} and endpoint not in known_mutations:
             abort(403)
 
@@ -435,7 +453,13 @@ def init_enterprise(app) -> None:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")
-        response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'")
+        form_action = "'self'"
+        if request.endpoint in {"enterprise.login", "identity.oidc_start"}:
+            from identity import form_action_origin
+            origin = form_action_origin()
+            if origin:
+                form_action += " " + origin
+        response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; form-action " + form_action + "; frame-ancestors 'none'; base-uri 'self'")
         if request.endpoint not in {"static", "download_crl"}:
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -444,7 +468,8 @@ def init_enterprise(app) -> None:
     def identity_context():
         from app import get_csrf_token
         return {"current_user": getattr(g, "user", None), "can_manage": can_manage,
-                "settings": {key: get_setting(key) for key in DEFAULT_SETTINGS}, "csrf_token": get_csrf_token}
+                "settings": {key: get_setting(key) for key in DEFAULT_SETTINGS}, "csrf_token": get_csrf_token,
+                "authentication": public_config()}
 
 
 @enterprise.route("/setup", methods=["GET", "POST"])
@@ -485,37 +510,8 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()[:64]
         password = request.form.get("password", "")
-        now = int(time.time())
-        buckets = ("user:" + username.casefold(), "ip:" + (request.remote_addr or "unknown"))
-        db = _db()
-        # A transaction makes throttle counters effective across all WSGI workers.
-        db.execute("BEGIN IMMEDIATE")
-        db.execute("DELETE FROM login_throttles WHERE window_started < ? AND blocked_until < ?", (now - 86400, now))
-        entries = [db.execute("SELECT * FROM login_throttles WHERE bucket = ?", (bucket,)).fetchone() for bucket in buckets]
-        if any(entry and entry["blocked_until"] > now for entry in entries):
-            db.commit()
-            response = Response("Too many login attempts. Try again in 15 minutes.", status=429)
-            response.headers["Retry-After"] = "900"
-            return response
-        user = db.execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
-        # Always perform a password hash check, including for unknown accounts.
-        expected_hash = user["password_hash"] if user else current_app.extensions["pkimaster_dummy_password_hash"]
-        valid_password = len(password) <= 256 and check_password_hash(expected_hash, password)
-        if user and user["active"] and valid_password:
-            db.execute("DELETE FROM login_throttles WHERE bucket = ?", (buckets[0],))
-            _start_session(user)
-            audit_event("session.password_verified", "user", str(user["id"]))
-            db.commit()
-            return redirect(url_for("mfa.challenge" if user["mfa_secret"] else "mfa.enroll"))
-        for bucket, entry in zip(buckets, entries):
-            attempts = entry["attempts"] + 1 if entry and now - entry["window_started"] < 900 else 1
-            window_started = entry["window_started"] if entry and now - entry["window_started"] < 900 else now
-            limit = 10 if bucket.startswith("user:") else 40
-            db.execute("INSERT INTO login_throttles (bucket, attempts, window_started, blocked_until) VALUES (?, ?, ?, ?) ON CONFLICT(bucket) DO UPDATE SET attempts = excluded.attempts, window_started = excluded.window_started, blocked_until = excluded.blocked_until", (bucket, attempts, window_started, now + 900 if attempts >= limit else 0))
-        audit_event("session.login_failed", "user", "", "Invalid credentials")
-        db.commit()
-        flash("Invalid username or password.")
-        return render_template("login.html", title="Sign in"), 401
+        from identity import password_login
+        return password_login(username, password)
     return render_template("login.html", title="Sign in")
 
 
@@ -559,6 +555,7 @@ def settings():
 @enterprise.route("/users", methods=["GET", "POST"])
 @require_roles("admin")
 def users():
+    from identity import user_allowed, validate_binding
     db = _db()
     if request.method == "POST":
         try:
@@ -567,11 +564,17 @@ def users():
                 username = request.form.get("username", "").strip()
                 password = request.form.get("password", "")
                 role = request.form.get("role", "")
+                source = request.form.get("auth_source", "local")
+                issuer, subject = validate_binding(source, request.form.get("external_issuer", "").strip(), request.form.get("external_subject", "").strip())
                 _validate_username(username)
-                _validate_password(password)
+                if source == "local":
+                    _validate_password(password)
+                else:
+                    password = secrets.token_urlsafe(64)
                 if role not in ROLES:
                     raise ValueError("Select a valid role.")
-                cursor = db.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", (username, generate_password_hash(password), role))
+                cursor = db.execute("INSERT INTO users (username, password_hash, role, auth_source, external_issuer, external_subject) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (username, generate_password_hash(password), role, source, issuer, subject))
                 audit_event("user.created", "user", str(cursor.lastrowid), f"username={username}; role={role}")
             elif action in {"deactivate", "activate", "reset_password"}:
                 try:
@@ -585,13 +588,15 @@ def users():
                 if not user:
                     raise ValueError("The user does not exist.")
                 if action == "deactivate":
-                    admins = db.execute("SELECT COUNT(*) FROM users WHERE role = 'admin' AND active = 1").fetchone()[0]
-                    if user["active"] and user["role"] == "admin" and admins <= 1:
+                    admins = sum(user_allowed(admin) for admin in db.execute("SELECT * FROM users WHERE role = 'admin' AND active = 1"))
+                    if user["active"] and user["role"] == "admin" and user_allowed(user) and admins <= 1:
                         raise ValueError("The last active administrator cannot be deactivated.")
                     db.execute("UPDATE users SET active = 0, session_version = session_version + 1 WHERE id = ?", (user_id,))
                 elif action == "activate":
                     db.execute("UPDATE users SET active = 1, session_version = session_version + 1 WHERE id = ?", (user_id,))
                 else:
+                    if user["auth_source"] != "local":
+                        raise ValueError("External passwords must be changed at the identity provider.")
                     password = request.form.get("password", "")
                     _validate_password(password)
                     db.execute("UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?", (generate_password_hash(password), user_id))
@@ -603,13 +608,15 @@ def users():
             return redirect(url_for("enterprise.users"))
         except (ValueError, sqlite3.IntegrityError) as exc:
             db.rollback()
-            flash("That username is already in use." if isinstance(exc, sqlite3.IntegrityError) else str(exc))
-            return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active FROM users ORDER BY username").fetchall()), 400
-    return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active FROM users ORDER BY username").fetchall())
+            flash("That username or external identity is already in use." if isinstance(exc, sqlite3.IntegrityError) else str(exc))
+            return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active, auth_source, external_issuer, external_subject FROM users ORDER BY username").fetchall()), 400
+    return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active, auth_source, external_issuer, external_subject FROM users ORDER BY username").fetchall())
 
 
 @enterprise.route("/password", methods=["GET", "POST"])
 def password():
+    if g.user["auth_source"] != "local":
+        return Response("Change your password at the configured identity provider.", 403)
     if request.method == "POST":
         try:
             old_password = request.form.get("current_password", "")

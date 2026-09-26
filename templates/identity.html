@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">Access control</p><h1>Authentication</h1><p class="muted">Select the first factor for your organization. Every account also uses its PKIMaster authenticator.</p></div></div>
+<div class="notice">Create external accounts in <a href="{{ url_for('enterprise.users') }}">Users</a> before switching providers. Roles are assigned here; provider email addresses and group claims never grant access. Saving revokes all sessions.</div>
+<form method="post" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <h2>Sign-in policy</h2>
+  <label>Authentication mode<select name="mode">{% for mode, label in [('local', 'Local accounts'), ('ldap', 'LDAP directory'), ('oidc', 'OpenID Connect')] %}<option value="{{ mode }}" {% if identity_config.mode == mode %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label><input type="checkbox" name="allow_local_breakglass" {% if identity_config.allow_local_breakglass %}checked{% endif %}> Allow local administrators to sign in when an external provider is selected</label>
+  <p class="muted">This fallback applies only to local administrators and still requires their authenticator. Local operators and auditors cannot use it.</p>
+  <h2>OpenID Connect</h2>
+  <div class="form-grid">
+    <label>Issuer URL<input name="oidc_issuer" type="url" value="{{ identity_config.oidc_issuer }}" placeholder="https://identity.example/realms/organization"></label>
+    <label>Client ID<input name="oidc_client_id" value="{{ identity_config.oidc_client_id }}" maxlength="256" autocomplete="off"></label>
+    <label>Client secret<input name="oidc_client_secret" type="password" autocomplete="new-password" maxlength="4096" placeholder="{{ 'Configured; leave blank to retain' if identity_config.oidc_client_secret_configured else 'Required for OIDC' }}"></label>
+    <label>Registered callback URL<input name="oidc_redirect_uri" type="url" value="{{ identity_config.oidc_redirect_uri }}" placeholder="https://pki.example/auth/oidc/callback"></label>
+  </div>
+  <p class="muted">Register an HTTPS callback ending in /auth/oidc/callback. The provider must support authorization code, PKCE S256, client_secret_basic, and RSA, RSA-PSS, or ECDSA signed ID tokens. Its TLS chain must be trusted by the host. OIDC sign-in returns to the exact configured callback.</p>
+  <p class="muted">OIDC accepts RSA provider keys from 2048 bits for interoperability and NIST P-256, P-384, or P-521 ECDSA keys. This provider policy is separate from the local CA's 3072-bit RSA minimum and is not a BSI compliance claim.</p>
+  <h2>LDAP directory</h2>
+  <div class="form-grid">
+    <label>Server URL<input name="ldap_url" value="{{ identity_config.ldap_url }}" placeholder="ldaps://directory.example:636"></label>
+    <label>Search base DN<input name="ldap_base_dn" value="{{ identity_config.ldap_base_dn }}" placeholder="ou=People,dc=example,dc=org"></label>
+    <label>Service bind DN<input name="ldap_bind_dn" value="{{ identity_config.ldap_bind_dn }}" autocomplete="off"></label>
+    <label>Service bind password<input name="ldap_bind_password" type="password" autocomplete="new-password" maxlength="4096" placeholder="{{ 'Configured; leave blank to retain' if identity_config.ldap_bind_password_configured else 'Required for LDAP' }}"></label>
+    <label>Username attribute<input name="ldap_user_attribute" value="{{ identity_config.ldap_user_attribute }}" placeholder="uid"></label>
+  </div>
+  <label>Directory CA certificates (optional PEM)<textarea name="ldap_ca_pem" rows="5" placeholder="Leave blank to use the host trust store">{{ identity_config.ldap_ca_pem }}</textarea></label>
+  <p class="muted">LDAPS and mandatory StartTLS are supported. Certificate and hostname verification are required; LDAP referrals are disabled. User lookup must return exactly one entry whose DN matches the provisioned identity. Provider passwords are encrypted in the database.</p>
+  <button type="submit">Save authentication settings</button>
+</form>
+{% endblock %}

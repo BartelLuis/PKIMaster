@@ -1,29 +1,35 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <h2>Organization and PKI policy</h2>
+<div class="page-heading"><div><span class="eyebrow">Administration</span><h1>Settings</h1><p>Configure your organization, certificate policy, and HTTPS service.</p></div><span class="pill">Administrator access</span></div>
+<section class="card content-narrow">
+  <div class="section-heading"><div><h2>Organization and PKI policy</h2><p>Policy changes apply to future operations and newly issued certificates.</p></div></div>
   <form method="post" enctype="multipart/form-data" action="{{ url_for('enterprise.settings') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Organization <input name="organization" value="{{ request.form.get('organization', settings.organization) }}" maxlength="200" required></label>
     <label>Public HTTPS base URL <input name="public_base_url" type="url" placeholder="https://pki.example.com:8443" value="{{ request.form.get('public_base_url', settings.public_base_url) }}"></label>
-    <p class="muted">Used for CRL distribution URLs in newly issued certificates. Previously issued certificates keep their original URLs.</p>
-    <div class="grid">
-      <label>Maximum leaf certificate lifetime (days) <input name="max_leaf_days" type="number" min="1" max="825" value="{{ request.form.get('max_leaf_days', settings.max_leaf_days) }}" required></label>
-      <label>CRL validity (days) <input name="crl_days" type="number" min="1" max="30" value="{{ request.form.get('crl_days', settings.crl_days) }}" required></label>
-      <label>Session inactivity timeout (minutes) <input name="session_minutes" type="number" min="5" max="480" value="{{ request.form.get('session_minutes', settings.session_minutes) }}" required></label>
+    <p class="form-hint">Used for CRL distribution URLs in newly issued certificates. Previously issued certificates keep their original URLs.</p>
+    <div class="form-section"><h3>Certificate and session policy</h3><p>Set validity limits and the console's session timeout.</p>
+      <div class="form-grid">
+        <label>Maximum leaf certificate lifetime (days) <input name="max_leaf_days" type="number" min="1" max="825" value="{{ request.form.get('max_leaf_days', settings.max_leaf_days) }}" required></label>
+        <label>CRL validity (days) <input name="crl_days" type="number" min="1" max="30" value="{{ request.form.get('crl_days', settings.crl_days) }}" required></label>
+        <label>Session inactivity timeout (minutes) <input name="session_minutes" type="number" min="5" max="480" value="{{ request.form.get('session_minutes', settings.session_minutes) }}" required></label>
+      </div>
+      <label class="checkbox-label"><input name="allow_key_export" type="checkbox" {% if settings.allow_key_export %}checked{% endif %}> Allow administrators to download end-entity private keys</label>
+      <p class="form-hint">End-entity key downloads are audited. CA private keys can never be downloaded. Operators and auditors cannot download keys.</p>
     </div>
-    <label><input name="allow_key_export" type="checkbox" style="width:auto" {% if settings.allow_key_export %}checked{% endif %}> Allow administrators to download end-entity private keys</label>
-    <p class="muted">End-entity key downloads are audited. CA private keys can never be downloaded. Operators and auditors cannot download keys.</p>
-    <h3>HTTPS service</h3>
-    <div class="grid">
-      <label>Listen address <input name="listen_address" value="{{ request.form.get('listen_address', settings.listen_address) }}" required></label>
-      <label>HTTPS port <input name="https_port" type="number" min="1024" max="65535" value="{{ request.form.get('https_port', settings.https_port) }}" required></label>
+    <div class="form-section"><h3>HTTPS service</h3><p>Manage the packaged service's listener and web certificate.</p>
+      <div class="form-grid">
+        <label>Listen address <input name="listen_address" value="{{ request.form.get('listen_address', settings.listen_address) }}" required></label>
+        <label>HTTPS port <input name="https_port" type="number" min="1024" max="65535" value="{{ request.form.get('https_port', settings.https_port) }}" required></label>
+      </div>
+      <p class="notice">127.0.0.1 permits local connections; 0.0.0.0 listens on all IPv4 interfaces. The packaged service automatically restarts after listener or certificate changes. Reconnect using the new address and port.</p>
+      <div class="form-grid">
+        <label>HTTPS certificate and optional chain (PEM) <input name="tls_certificate" type="file" accept=".pem,.crt,.cer"></label>
+        <label>Matching unencrypted private key (PEM) <input name="tls_private_key" type="file" accept=".pem,.key"></label>
+      </div>
+      <p class="form-hint">Upload both files to replace the initial HTTPS certificate. The server certificate must contain a Subject Alternative Name and match the private key. Leave both blank to retain the current certificate.</p>
     </div>
-    <p class="muted">127.0.0.1 permits local connections; 0.0.0.0 listens on all IPv4 interfaces. The packaged service automatically restarts after listener or certificate changes. Reconnect using the new address and port.</p>
-    <label>HTTPS certificate and optional chain (PEM) <input name="tls_certificate" type="file" accept=".pem,.crt,.cer"></label>
-    <label>Matching unencrypted private key (PEM) <input name="tls_private_key" type="file" accept=".pem,.key"></label>
-    <p class="muted">Upload both files to replace the initial HTTPS certificate. The server certificate must contain a Subject Alternative Name and match the private key. Leave both blank to retain the current certificate.</p>
-    <button type="submit">Save settings</button>
+    <div class="form-actions"><button type="submit">Save settings</button><p>Changes are recorded in the audit log.</p></div>
   </form>
 </section>
 {% endblock %}

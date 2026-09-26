@@ -63,10 +63,10 @@ class PackagedRuntimeTests(unittest.TestCase):
             read_listener(self.state)
 
     def test_rejected_listener_is_audited_without_overwriting_a_newer_save(self):
+        from app import create_app
+        create_app({"TESTING": True, "INSTANCE_PATH": str(self.state)})
         with closing(sqlite3.connect(self.state / "pkimaster.sqlite")) as db, db:
-            db.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            db.execute("CREATE TABLE audit_events (actor_name TEXT, action TEXT, object_type TEXT, detail TEXT)")
-            db.executemany("INSERT INTO settings VALUES (?, ?)", [("listen_address", "192.0.2.123"), ("https_port", "8443")])
+            db.executemany("UPDATE settings SET value=? WHERE key=?", [("192.0.2.123", "listen_address"), ("8443", "https_port")])
         active = _Configuration("127.0.0.1", 8443, b"previous identity")
         rejected = _Configuration("192.0.2.123", 8443, b"requested identity")
         _reject_configuration(self.state, rejected, active)

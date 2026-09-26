@@ -1,5 +1,6 @@
 include README.md
 recursive-include templates *.html
+recursive-include static *.css *.js *.svg
 recursive-include debian *
 recursive-include scripts *.sh
 recursive-include scripts *.py

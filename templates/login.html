@@ -1,25 +1,43 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  {% if change_password %}
-  <h2>Change your password</h2>
+{% if change_password %}
+<div class="page-heading"><div><span class="eyebrow">Account security</span><h1>Change your password</h1><p>Choose a unique passphrase for your PKIMaster account.</p></div></div>
+<section class="card content-narrow">
+  <h2>Password update</h2>
   <form method="post" action="{{ url_for('enterprise.password') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Current password <input name="current_password" type="password" required autocomplete="current-password" maxlength="256"></label>
-    <label>New password or passphrase <input name="password" type="password" required autocomplete="new-password" minlength="14" maxlength="256"></label>
-    <label>Confirm new password <input name="password_confirm" type="password" required autocomplete="new-password" minlength="14" maxlength="256"></label>
-    <p class="muted">Changing your password signs out every session, including this one.</p>
-    <button type="submit">Change password</button>
+    <div class="form-grid">
+      <label>New password or passphrase <input name="password" type="password" required autocomplete="new-password" minlength="14" maxlength="256"></label>
+      <label>Confirm new password <input name="password_confirm" type="password" required autocomplete="new-password" minlength="14" maxlength="256"></label>
+    </div>
+    <p class="notice">Changing your password signs out every session, including this one.</p>
+    <div class="form-actions"><button type="submit">Change password</button></div>
   </form>
+</section>
+{% else %}
+{% set auth_mode = authentication.mode if authentication is defined else 'local' %}
+<section class="card">
+  <div class="auth-symbol">{{ icon('lock') }}</div><span class="eyebrow">Welcome back</span>
+  <h1>Sign in to {{ settings.organization }}</h1>
+  {% if auth_mode == 'oidc' %}
+  <p>Continue with your organization's identity provider, then verify your PKIMaster authenticator code.</p>
+  <form method="post" action="{{ url_for('identity.oidc_start') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Continue with your identity provider</button>
+  </form>
+  {% if authentication.allow_local_breakglass %}<div class="auth-divider">Emergency local administrator</div>{% endif %}
   {% else %}
-  <h2>Sign in to {{ settings.organization }}</h2>
-  <p>Sign in with your password, then verify your authenticator code. First-time users must enroll an authenticator before accessing the PKI.</p>
+  <p>{{ 'Use your directory credentials' if auth_mode == 'ldap' else 'Sign in with your password' }}, then verify your authenticator code. First-time users must enroll an authenticator before accessing the PKI.</p>
+  {% endif %}
+  {% if auth_mode != 'oidc' or authentication.allow_local_breakglass %}
   <form method="post" action="{{ url_for('enterprise.login') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Username <input name="username" required autocomplete="username" maxlength="64"></label>
+    <label>Username <input name="username" required autocomplete="username" maxlength="64" autofocus></label>
     <label>Password <input name="password" type="password" required autocomplete="current-password" maxlength="256"></label>
-    <button type="submit">Continue to authenticator</button>
+    <button type="submit">{{ 'Emergency local admin sign-in' if auth_mode == 'oidc' else 'Continue to authenticator' }}</button>
   </form>
   {% endif %}
 </section>
+{% endif %}
 {% endblock %}

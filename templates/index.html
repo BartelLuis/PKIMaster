@@ -1,16 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:1rem;">
-  <section class="card stat">Local CA<strong>{{ authorities|length }} / 1</strong></section>
-  <section class="card stat">Certificates<strong>{{ counts['total'] }}</strong></section>
-  <section class="card stat">Expiring in 30 days<strong>{{ counts['expiring'] }}</strong></section>
-  <section class="card stat">Revoked / expired<strong>{{ counts['revoked'] }} / {{ counts['expired'] }}</strong></section>
+<div class="page-heading">
+  <div><span class="eyebrow">Certificate operations</span><h1>Certificate inventory</h1><p>Manage this server's authority, certificate lifecycle, and trust relationships.</p></div>
+  <span class="pill">One CA per server</span>
+</div>
+<div class="grid stats-grid">
+  <section class="card stat"><span class="stat-label">Local CA</span><span class="stat-icon">{{ icon('shield') }}</span><strong>{{ authorities|length }} / 1</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if block_reason or not authority else '' }}"></span>{{ 'Needs attention' if block_reason else ('Authority initialized' if authority else 'Ready to initialize') }}</span></section>
+  <section class="card stat"><span class="stat-label">Certificates</span><span class="stat-icon">{{ icon('audit') }}</span><strong>{{ counts['total'] }}</strong><span class="stat-caption">End-entity certificates issued</span></section>
+  <section class="card stat"><span class="stat-label">Expiring in 30 days</span><span class="stat-icon">{{ icon('lock') }}</span><strong>{{ counts['expiring'] }}</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if counts['expiring'] else 'neutral' }}"></span>{{ 'Plan certificate renewals' if counts['expiring'] else 'No upcoming expirations' }}</span></section>
+  <section class="card stat"><span class="stat-label">Revoked / expired</span><span class="stat-icon">{{ icon('grid') }}</span><strong>{{ counts['revoked'] }} / {{ counts['expired'] }}</strong><span class="stat-caption">Certificate lifecycle status</span></section>
 </div>
 {% include "ca_console.html" %}
 {% if can_manage('admin', 'operator') and authority and authority['role'] == 'issuing' %}
-<section class="card" style="margin-top:1rem;">
-  <h2>Issue certificate</h2>
-  <p>Signing authority: <strong>{{ authority['name'] }}</strong>. All issuance uses this server's single CA.</p>
+<section class="card">
+  <div class="section-heading"><div><h2>Issue certificate</h2><p>Signing authority: <strong>{{ authority['name'] }}</strong>. All issuance uses this server's single CA.</p></div><span class="pill">End-entity issuance</span></div>
   <form method="post" action="{{ url_for('create_certificate') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
@@ -26,17 +29,17 @@
   </form>
 </section>
 {% endif %}
-<section class="card" style="margin-top:1rem;">
-  <h2>Issued certificates</h2>
-  <form method="get" class="compact" role="search">
+<section class="card">
+  <div class="section-heading"><div><h2>Issued certificates</h2><p>Search issued certificates, download artifacts, and manage revocation.</p></div><span class="pill">{{ total }} total</span></div>
+  <div class="table-toolbar"><form method="get" class="compact" role="search">
     <input name="q" aria-label="Search certificates by common name" value="{{ query }}" placeholder="Search common name" maxlength="255">
-    <button type="submit">Search</button>
-  </form>
+    <button class="button-secondary" type="submit">Search</button>
+  </form></div>
   {% if certificates %}
   <div class="table-scroll"><table>
     <thead><tr><th>Common name / SANs</th><th>Issuer / profile</th><th>Status / expires</th><th>Actions</th></tr></thead>
     <tbody>{% for certificate in certificates %}<tr>
-      <td class="mono">{{ certificate['common_name'] }}<br><small>{{ certificate['subject_alt_names'] }}</small></td>
+      <td><span class="mono cell-title">{{ certificate['common_name'] }}</span><br><small class="mono">{{ certificate['subject_alt_names'] }}</small></td>
       <td>{{ certificate['authority_name'] }}<br><small>{{ certificate['profile'] }}</small></td>
       <td>
         {% if certificate['revoked_at'] %}<span class="pill status-revoked">Revoked</span>
@@ -61,10 +64,10 @@
       </td>
     </tr>{% endfor %}</tbody>
   </table></div>
-  {% else %}<p class="muted">No matching certificates.</p>{% endif %}
-  <p class="actions">{{ total }} certificate(s). Page {{ page }}.
+  {% else %}<div class="empty-state">{{ icon('audit') }}<h3>No matching certificates.</h3><p>{{ 'Try another common name to refine your search.' if query else 'Certificates issued by this server will appear here.' }}</p></div>{% endif %}
+  <div class="pagination"><p>{{ total }} certificate(s). Page {{ page }}.</p><div class="actions">
     {% if page > 1 %}<a href="{{ url_for('index', q=query, page=page-1) }}">Previous</a>{% endif %}
     {% if page * 50 < total %}<a href="{{ url_for('index', q=query, page=page+1) }}">Next</a>{% endif %}
-  </p>
+  </div></div>
 </section>
 {% endblock %}

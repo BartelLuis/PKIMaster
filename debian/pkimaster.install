@@ -1,6 +1,12 @@
 app.py usr/lib/pkimaster
 enterprise.py usr/lib/pkimaster
 mfa.py usr/lib/pkimaster
+identity.py usr/lib/pkimaster
+key_backends.py usr/lib/pkimaster
+key_storage.py usr/lib/pkimaster
+audit_integrity.py usr/lib/pkimaster
+security.py usr/lib/pkimaster
 pki.py usr/lib/pkimaster
 pkimaster_server.py usr/lib/pkimaster
 templates usr/lib/pkimaster
+static usr/lib/pkimaster

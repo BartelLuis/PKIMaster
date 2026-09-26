@@ -1,14 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
+<a class="back-link" href="{{ url_for('index') }}">← Back to dashboard</a>
+<div class="page-heading"><div><span class="eyebrow">Authority details</span><h1>{{ authority['name'] }}</h1><p>This server's certificate authority and public trust artifacts.</p></div><span class="pill pill-dot {{ 'status-active' if active else 'status-revoked' }}">{{ 'Active' if active else 'Inactive' }}</span></div>
 <section class="card">
-  <p><a href="{{ url_for('index') }}">← Back to dashboard</a></p>
-  <h2>{{ authority['name'] }}</h2>
-  <p><span class="pill">{{ authority['role'] }}</span></p>
-  <p><span class="pill {{ 'status-active' if active else 'status-revoked' }}">{{ 'Active' if active else 'Inactive' }}</span></p>
+  <div class="section-heading"><h2>Authority identity</h2><span class="pill">{{ authority['role'] }}</span></div>
   {% if authority['revoked_at'] %}<p>Revoked {{ authority['revoked_at'] }}: {{ authority['revocation_reason']|replace('_', ' ') }}</p>{% endif %}
-  {% if block_reason %}<p>{{ block_reason }}</p>{% endif %}
+  {% if block_reason %}<p class="notice notice-warning">{{ block_reason }}</p>{% endif %}
   <p>The only local CA. Its private key is not available for download.</p>
-  <table>
+  <div class="table-scroll"><table class="detail-table">
     <tbody>
       <tr><th>Subject</th><td class="mono">{{ authority['common_name'] }}</td></tr>
       <tr><th>Serial</th><td class="mono">{{ authority['serial_number'] }}</td></tr>
@@ -26,7 +25,7 @@
         </td>
       </tr>
     </tbody>
-  </table>
+  </table></div>
   {% if can_manage('admin') and not authority['revoked_at'] %}
   <details><summary>Revoke this authority</summary>
     <p>Disabling this local CA stops its issuance. Request revocation on its parent server and distribute the updated CRL. This cannot be undone.</p>
@@ -44,7 +43,7 @@
   <section class="card">
     <h3>Subordinate certificates (remote CAs)</h3>
     {% if child_authorities %}
-      <ul>
+      <ul class="detail-list">
         {% for child in child_authorities %}
           <li><a href="{{ url_for('download_subordinate', subordinate_id=child['id'], artifact='cert') }}">{{ child['common_name'] }}</a> · {{ child['role'] }}</li>
         {% endfor %}

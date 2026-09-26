@@ -1,39 +1,52 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-heading"><div><span class="eyebrow">Administration</span><h1>Users &amp; access</h1><p>Manage named accounts, role assignments, and access to certificate operations.</p></div><span class="pill">MFA required for all roles</span></div>
 <section class="card">
-  <h2>Create user</h2>
-  <p class="muted">Administrators manage CAs, settings, and users. Operators issue and revoke leaf certificates. Auditors have read access. All roles can view audit events.</p>
+  <div class="section-heading"><div><h2>Create user</h2><p>Administrators manage CAs, settings, and users. Operators issue and revoke leaf certificates. Auditors have read access. All roles can view audit events.</p></div></div>
   <form method="post" action="{{ url_for('enterprise.users') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="create">
-    <label>Username <input name="username" minlength="3" maxlength="64" required autocomplete="off"></label>
-    <label>Initial password or passphrase <input name="password" type="password" minlength="14" maxlength="256" required autocomplete="new-password"></label>
-    <label>Role <select name="role"><option value="auditor">Auditor</option><option value="operator">Operator</option><option value="admin">Administrator</option></select></label>
-    <button type="submit">Create user</button>
+    <div class="form-grid">
+      <label>Username <input name="username" minlength="3" maxlength="64" required autocomplete="off"></label>
+      <label>Role <select name="role"><option value="auditor">Auditor</option><option value="operator">Operator</option><option value="admin">Administrator</option></select></label>
+    </div>
+    <div class="form-grid">
+      <label>Authentication source <select name="auth_source" data-account-source><option value="local">Local account</option><option value="ldap">LDAP directory</option><option value="oidc">OpenID Connect</option></select></label>
+      <label data-local-account>Initial password or passphrase <input name="password" type="password" minlength="14" maxlength="256" autocomplete="new-password"></label>
+    </div>
+    <div class="form-grid" data-external-account>
+      <label>External issuer <input name="external_issuer" type="url" placeholder="Exact OIDC issuer or LDAP server URL"></label>
+      <label>External subject <input name="external_subject" placeholder="Exact OIDC subject or LDAP distinguished name"></label>
+    </div>
+    <p class="form-hint">External accounts must match an identity in the configured provider. Every account must enroll a PKIMaster authenticator on first sign-in.</p>
+    <div class="form-actions"><button type="submit">Create user</button></div>
   </form>
 </section>
-<section class="card" style="margin-top:1rem">
-  <h2>User accounts</h2>
+<section class="card">
+  <div class="section-heading"><div><h2>User accounts</h2><p>Access changes apply immediately. Password resets revoke all sessions for the account.</p></div></div>
   {% for user in users %}
-  <article style="padding:1rem 0;border-bottom:1px solid var(--border)">
-    <h3>{{ user.username }} <span class="pill">{{ user.role }}</span> <span class="muted">{{ 'Active' if user.active else 'Disabled' }}</span></h3>
+  {% set source = user.auth_source or 'local' %}
+  <article class="user-row">
+    <div class="user-identity"><span class="avatar" aria-hidden="true">{{ user.username[:1]|upper }}</span><div><h3>{{ user.username }} <span class="pill">{{ user.role }}</span> <span class="pill {{ 'status-active' if user.active else 'status-revoked' }}">{{ 'Active' if user.active else 'Disabled' }}</span></h3><p>{{ source|upper }} authentication{% if source != 'local' %} · <span class="mono">{{ user.external_subject }}</span>{% endif %}</p></div></div>
     <div class="grid">
       <form method="post" action="{{ url_for('enterprise.users') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="user_id" value="{{ user.id }}">
         <input type="hidden" name="action" value="{{ 'deactivate' if user.active else 'activate' }}">
-        <button type="submit">{{ 'Deactivate' if user.active else 'Activate' }} account</button>
+        <button class="button-secondary" type="submit">{{ 'Deactivate' if user.active else 'Activate' }} account</button>
       </form>
+      {% if source == 'local' %}
       <form method="post" action="{{ url_for('enterprise.users') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="user_id" value="{{ user.id }}">
         <input type="hidden" name="action" value="reset_password">
         <label>New password <input name="password" type="password" minlength="14" maxlength="256" required autocomplete="new-password"></label>
-        <button type="submit">Reset password and revoke sessions</button>
+        <button class="button-secondary" type="submit">Reset password and revoke sessions</button>
       </form>
+      {% else %}<p class="muted">Credentials are managed by the external identity provider.</p>{% endif %}
     </div>
   </article>
   {% endfor %}
-  <p class="muted">The last active administrator cannot be deactivated. Deactivating an account immediately revokes its sessions.</p>
+  <p class="notice">The last active administrator cannot be deactivated. Deactivating an account immediately revokes its sessions.</p>
 </section>
 {% endblock %}

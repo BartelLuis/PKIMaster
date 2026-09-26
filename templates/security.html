@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <p class="eyebrow">Assurance &amp; evidence</p><h2>Security posture</h2>
+  <p class="muted">Technical controls for your CA operation. Organizational controls and an independent BSI assessment remain necessary.</p>
+  <div class="grid">
+    <div class="stat"><span>Local CA boundary</span><strong>{{ '1 / 1' if authority else '0 / 1' }}</strong></div>
+    <div class="stat"><span>MFA-enrolled administrators</span><strong>{{ enrolled_admins }}</strong></div>
+    <div class="stat"><span>Verified audit events</span><strong>{{ checkpoint.event_count if checkpoint else 'Failed' }}</strong></div>
+  </div>
+  {% if integrity_error %}<p class="notice danger">{{ integrity_error }}</p>{% else %}<p class="notice">Audit chain verified. Records are protected by chained SHA-256 hashes, keyed authentication and append-only database guards.</p>{% endif %}
+  <dl><dt>Signing readiness</dt><dd>{{ block_reason or 'CA is active and its required parent status is current.' }}</dd>
+  <dt>Independent CA approval</dt><dd>Subordinate certificates require a different administrator to approve the recorded CSR.</dd>
+  <dt>Key protection</dt><dd>{{ key_backend_label }}. CA private-key downloads are disabled.</dd>
+  <dt>Authentication</dt><dd>Local, LDAP or OIDC first factor, followed by mandatory application TOTP.</dd></dl>
+</section>
+<section class="card"><h2>Audit evidence</h2>
+  <p>Archive exports in an independently protected retention system. Compare the checkpoint against earlier exports to detect replacement or rollback. A host administrator with access to the application secrets can rewrite local evidence.</p>
+  {% if checkpoint %}<label>Current chain head</label><code class="mono">{{ checkpoint.head_hash }}</code>{% endif %}
+  {% if legacy_events %}<p class="muted">{{ legacy_events }} existing events were sealed during migration. Their integrity before migration cannot be established by this chain.</p>{% endif %}
+  {% if can_manage('admin','auditor') and not integrity_error %}<p><a class="button" href="{{ url_for('security.export') }}">Export verified audit evidence</a></p>{% endif %}
+  <p class="muted">Remaining operating requirements include approved HSM selection, key ceremonies, external log retention, incident procedures, backup and recovery exercises, CP/CPS and independent assessment. This status page is not a BSI certification.</p>
+</section>
+{% endblock %}

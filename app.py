@@ -20,7 +20,7 @@ from werkzeug.utils import secure_filename
 
 from enterprise import audit_event, can_manage, configure_runtime, get_setting, init_enterprise
 from pki import (REVOCATION_REASONS, build_crl, create_ca_certificate, create_ca_request,
-                 issue_end_entity_certificate, sign_ca_request, validate_ca_activation, valid_parent_child_roles)
+                 issue_end_entity_certificate, sign_ca_request, validate_ca_activation, valid_parent_child_roles, crl_signature_is_valid)
 
 
 def utc_now() -> datetime:
@@ -105,8 +105,7 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
         for child, parent, crl in zip(chain, chain[1:], crls):
             if not parent.not_valid_before_utc <= utc_now() < parent.not_valid_after_utc:
                 raise ValueError("A parent CA is expired or not yet valid.")
-            if (crl.issuer != parent.subject or not crl.is_signature_valid(parent.public_key())
-                    or crl.signature_hash_algorithm.name not in {"sha256", "sha384", "sha512"}):
+            if crl.issuer != parent.subject or not crl_signature_is_valid(crl, parent.public_key()):
                 raise ValueError("Parent CRL signature or issuer is invalid.")
             if not crl.next_update_utc or not crl.last_update_utc <= utc_now() < crl.next_update_utc:
                 raise ValueError("A parent CRL is stale or not yet valid. Import a fresh CRL.")
@@ -134,7 +133,8 @@ def create_app(test_config: dict | None = None) -> Flask:
     templates = Path(__file__).parent / "templates"
     if not templates.is_dir():
         templates = Path(sys.prefix) / "share" / "pkimaster" / "templates"
-    app = Flask(__name__, template_folder=str(templates))
+    static = templates.parent / "static"
+    app = Flask(__name__, template_folder=str(templates), static_folder=str(static))
     instance_path = Path((test_config or {}).get("INSTANCE_PATH", Path(__file__).parent / "instance"))
     app.config.update(INSTANCE_PATH=str(instance_path), DATABASE=str(instance_path / "pkimaster.sqlite"),
                       MAX_CONTENT_LENGTH=1024 * 1024, SESSION_COOKIE_SECURE=True)
@@ -150,7 +150,22 @@ def create_app(test_config: dict | None = None) -> Flask:
             database.close()
 
     app.jinja_env.globals["csrf_token"] = get_csrf_token
+    app.jinja_env.globals["has_endpoint"] = lambda name: name in app.view_functions
     init_enterprise(app)
+    from audit_integrity import init_audit, verify_chain, AuditIntegrityError
+    from security import security
+    init_audit(app)
+    app.register_blueprint(security)
+    from key_storage import init_key_storage, authority_signing_key, provision_authority_key
+    init_key_storage(app)
+
+    @app.before_request
+    def protect_audit_integrity():
+        if request.method not in {"GET", "HEAD", "OPTIONS"} or request.endpoint in {"download_crl", "identity.oidc_callback"}:
+            try:
+                verify_chain(get_db(), app.config["KEY_ENCRYPTION_SECRET"])
+            except AuditIntegrityError:
+                return Response("Audit integrity verification failed. Operation refused; preserve the state for investigation.", status=503)
 
     @app.get("/")
     def index() -> str:
@@ -214,16 +229,17 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError("Only one CA is permitted per server. Use a separate server for another CA.")
             if parent_id:
                 raise ValueError("A parent CA must run on a separate server. Exchange a CSR and signed certificates through the web console.")
+            signer, backend, reference = provision_authority_key()
             if role == "root":
-                pem, key, serial, start, end = create_ca_certificate(common_name=common_name, validity_days=days, role=role)
+                pem, key, serial, start, end = create_ca_certificate(common_name=common_name, validity_days=days, role=role, signer=signer)
                 csr, state = "", "active"
             else:
-                csr, key = create_ca_request(common_name, role)
+                csr, key = create_ca_request(common_name, role, signer=signer)
                 pem, serial, start, end, state = "", "", "", "", "pending"
             result = db.execute("""INSERT INTO authorities
-                (name, role, common_name, certificate_pem, private_key_pem, serial_number, not_before, not_after, csr_pem, state)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name, role, common_name, pem, encrypt_private_key(key), serial, start, end, csr, state))
+                (name, role, common_name, certificate_pem, private_key_pem, serial_number, not_before, not_after, csr_pem, state, key_backend, key_reference)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (name, role, common_name, pem, encrypt_private_key(key) if key else "", serial, start, end, csr, state, backend, reference))
             audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
             db.commit()
             flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.")
@@ -245,7 +261,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError("Only a pending local CA can be activated.")
             pem = request.form.get("certificate_pem", "").strip()
             chain = validate_ca_activation(pem, request.form.get("chain_pem", ""),
-                decrypt_private_key(authority["private_key_pem"]), authority["common_name"], authority["role"])
+                authority_signing_key(authority), authority["common_name"], authority["role"])
             root_cert = x509.load_pem_x509_certificates(chain.encode())[-1]
             trusted_fingerprint = request.form.get("trusted_root_sha256", "").replace(":", "").replace(" ", "").strip().lower()
             if not trusted_fingerprint.isascii() or not compare_digest(trusted_fingerprint, root_cert.fingerprint(hashes.SHA256()).hex()):
@@ -350,7 +366,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             if not authority_is_active(authority):
                 raise ValueError(authority_block_reason(authority))
             pem, serial, start, end = sign_ca_request(pending["csr_pem"], pending["role"], pending["validity_days"],
-                authority["role"], authority["certificate_pem"], decrypt_private_key(authority["private_key_pem"]),
+                authority["role"], authority["certificate_pem"], authority_signing_key(authority),
                 crl_url=crl_distribution_url(authority["id"]))
             result = db.execute("INSERT INTO issued_authorities (authority_id, common_name, role, certificate_pem, serial_number, not_before, not_after) VALUES (?,?,?,?,?,?,?)",
                 (authority["id"], pending["common_name"], pending["role"], pem, serial, start, end))
@@ -400,7 +416,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError(authority_block_reason(authority))
             pem, key, serial, start, end = issue_end_entity_certificate(
                 common_name=common_name, issuer_certificate_pem=authority["certificate_pem"],
-                issuer_private_key_pem=decrypt_private_key(authority["private_key_pem"]), validity_days=days,
+                issuer_private_key_pem=authority_signing_key(authority), validity_days=days,
                 subject_alt_names=request.form.get("subject_alt_names", ""), profile=profile,
                 csr_pem=request.form.get("csr_pem", "").strip() or None, crl_url=crl_distribution_url(authority["id"]), minimum_rsa_bits=3072)
             certificate = x509.load_pem_x509_certificate(pem.encode())
@@ -493,7 +509,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     SELECT serial_number, revoked_at, revocation_reason FROM issued_authorities
                     WHERE authority_id = ? AND revoked_at IS NOT NULL""", (authority_id, authority_id)).fetchall()
                 number = (cached["number"] if cached else 0) + 1
-                der = build_crl(authority["certificate_pem"], decrypt_private_key(authority["private_key_pem"]),
+                der = build_crl(authority["certificate_pem"], authority_signing_key(authority),
                                 [dict(row) for row in revoked], number, int(get_setting("crl_days", 7)))
                 next_update = x509.load_der_x509_crl(der).next_update_utc.isoformat()
                 db.execute("""INSERT INTO crls(authority_id, number, der, next_update) VALUES (?, ?, ?, ?)
@@ -631,10 +647,13 @@ def init_db(app: Flask) -> None:
                 connection.execute("ALTER TABLE certificates ADD COLUMN profile TEXT NOT NULL DEFAULT 'dual'")
             if table == "authorities":
                 for name, declaration in (("state", "TEXT NOT NULL DEFAULT 'active'"), ("csr_pem", "TEXT NOT NULL DEFAULT ''"),
-                                          ("parent_chain_pem", "TEXT NOT NULL DEFAULT ''"), ("parent_crls_pem", "TEXT NOT NULL DEFAULT ''")):
+                                          ("parent_chain_pem", "TEXT NOT NULL DEFAULT ''"), ("parent_crls_pem", "TEXT NOT NULL DEFAULT ''"),
+                                          ("key_backend", "TEXT NOT NULL DEFAULT 'software'"), ("key_reference", "TEXT NOT NULL DEFAULT ''")):
                     if name not in columns:
                         connection.execute(f"ALTER TABLE authorities ADD COLUMN {name} {declaration}")
         connection.executescript("""
+            CREATE TRIGGER IF NOT EXISTS immutable_ca_key_binding BEFORE UPDATE OF key_backend, key_reference ON authorities
+            BEGIN SELECT RAISE(ABORT, 'The CA key provider and identity are immutable'); END;
             CREATE TRIGGER IF NOT EXISTS single_local_ca BEFORE INSERT ON authorities
             WHEN EXISTS (SELECT 1 FROM authorities)
             BEGIN SELECT RAISE(ABORT, 'Only one CA is permitted per server'); END;

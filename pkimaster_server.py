@@ -214,12 +214,13 @@ def _reject_configuration(instance_path: Path, rejected: _Configuration, active:
         uploaded = instance_path / "server-tls" / "uploaded.pem"
         if uploaded.exists() and uploaded.read_bytes() == rejected.pem:
             _atomic_write(uploaded, active.pem)
-        db.execute("INSERT INTO audit_events (actor_name, action, object_type, detail) VALUES (?, ?, ?, ?)", (
-            "system", "runtime.listener_rejected", "settings", json.dumps({
+        from audit_integrity import append_event, verify_chain
+        secrets = json.loads((instance_path / "runtime-secrets.json").read_text(encoding="utf-8"))
+        verify_chain(db, secrets["KEY_ENCRYPTION_SECRET"])
+        append_event(db, secrets["KEY_ENCRYPTION_SECRET"], actor_name="system", action="runtime.listener_rejected", object_type="settings", detail=json.dumps({
                 "rejected_address": rejected.host, "rejected_port": rejected.port,
                 "restored_address": active.host, "restored_port": active.port,
-            }, sort_keys=True),
-        ))
+            }, sort_keys=True))
 
 
 def _check_bind(host: str, port: int) -> None:

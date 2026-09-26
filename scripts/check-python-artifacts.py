@@ -27,7 +27,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-APPLICATION_MODULES = {"app", "enterprise", "mfa", "pki", "pkimaster_server", "wsgi"}
+APPLICATION_MODULES = {"app", "enterprise", "identity", "mfa", "pki", "key_backends", "key_storage", "audit_integrity", "security", "pkimaster_server", "wsgi"}
 
 
 def require(condition: bool, message: str) -> None:
@@ -62,6 +62,7 @@ def check_archives(wheel: Path, sdist: Path, configuration: dict) -> tuple[list[
     templates = [path.relative_to(ROOT / "templates").as_posix() for path in template_paths]
     module_files = {module.replace(".", "/") + ".py" for module in modules}
     expected_files = module_files | {"templates/" + name for name in templates}
+    expected_files |= {path.relative_to(ROOT).as_posix() for path in (ROOT / "static").rglob("*") if path.is_file()}
 
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
@@ -71,7 +72,7 @@ def check_archives(wheel: Path, sdist: Path, configuration: dict) -> tuple[list[
         distribution_prefix = metadata_files[0].removesuffix(".dist-info/METADATA")
         for source_name in sorted(expected_files):
             archive_name = source_name
-            if source_name.startswith("templates/"):
+            if source_name.startswith(("templates/", "static/")):
                 archive_name = distribution_prefix + ".data/data/share/pkimaster/" + source_name
             require(archive_name in names, f"{wheel.name}: missing {source_name}.")
             require(archive.read(archive_name) == (ROOT / source_name).read_bytes(),
@@ -157,6 +158,9 @@ class SetupForm(HTMLParser):
 
 response = application.test_client().get("/setup", base_url="https://localhost")
 require(response.status_code == 200, "Installed setup page did not return HTTP 200.")
+for asset in ("css/console.css", "js/console.js"):
+    asset_response = application.test_client().get("/static/" + asset, base_url="https://localhost")
+    require(asset_response.status_code == 200 and asset_response.data, "Installed console asset missing: " + asset)
 form = SetupForm()
 form.feed(response.get_data(as_text=True))
 require(form.form and form.csrf and {"organization", "username", "password", "password_confirm"} <= form.fields,

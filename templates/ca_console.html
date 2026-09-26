@@ -1,11 +1,9 @@
-<section class="card">
-  <h2>Local certificate authority</h2>
+<section class="card authority-panel">
+  <div class="section-heading"><div><span class="eyebrow">Server identity</span><h2>Local certificate authority</h2></div>{% if authority %}<a class="button button-secondary button-small" href="{{ url_for('authority_detail', authority_id=authority['id']) }}">View authority</a>{% endif %}</div>
   {% if authority %}
-  <p><a href="{{ url_for('authority_detail', authority_id=authority['id']) }}"><strong>{{ authority['name'] }}</strong></a>
-    <span class="pill">{{ authority['role'] }}</span>
-    <span class="pill {{ 'status-revoked' if block_reason else 'status-active' }}">{{ 'Signing blocked' if block_reason else 'Operational' }}</span></p>
-  <p class="muted">This is the only CA on this server. Other trust tiers run on separate servers. Its private key cannot be exported through the console.</p>
-  {% if block_reason %}<p role="status">{{ block_reason }}</p>{% endif %}
+  <div class="authority-identity"><span class="authority-emblem">{{ icon('shield') }}</span><div><a class="authority-name" href="{{ url_for('authority_detail', authority_id=authority['id']) }}">{{ authority['name'] }}</a><div class="authority-badges"><span class="pill">{{ authority['role'] }}</span><span class="pill pill-dot {{ 'status-pending' if block_reason else 'status-active' }}">{{ 'Signing blocked' if block_reason else 'Operational' }}</span></div></div></div>
+  <p class="authority-description">This is the only CA on this server. Other trust tiers run on separate servers. Its private key cannot be exported through the console.</p>
+  {% if block_reason %}<p class="notice notice-warning" role="status">{{ block_reason }}</p>{% endif %}
   <p class="actions">
     {% if authority['csr_pem'] %}<a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='csr') }}">Download CA CSR</a>{% endif %}
     {% if authority['state'] == 'active' %}
@@ -53,9 +51,9 @@
 
 {% if authority and authority['role'] != 'issuing' %}
 {% if can_manage('admin') %}
-<section class="card" style="margin-top:1rem;">
-  <h2>Request subordinate CA signing</h2>
-  <p>Submit a CSR generated on the subordinate CA's own server. A different administrator must review and approve the request. No subordinate private key is generated or stored here.</p>
+<section class="card">
+  <div class="section-heading"><div><span class="eyebrow">Approval workflow</span><h2>Request subordinate CA signing</h2></div><span class="pill">Two-person approval</span></div>
+  <p class="muted">Submit a CSR generated on the subordinate CA's own server. A different administrator must review and approve the request. No subordinate private key is generated or stored here.</p>
   <form method="post" action="{{ url_for('sign_subordinate') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Subordinate role<select name="role"><option value="issuing">Issuing</option>{% if authority['role'] == 'root' %}<option value="intermediate">Intermediate</option>{% endif %}</select></label>
@@ -65,11 +63,10 @@
   </form>
 </section>
 {% endif %}
-<section class="card" style="margin-top:1rem;">
-  <h2>CA signing requests</h2>
-  <p class="muted">Most recent 100 requests. Approval signs the exact recorded CSR and policy shown below.</p>
+<section class="card">
+  <div class="section-heading"><div><h2>CA signing requests</h2><p>Most recent 100 requests. Approval signs the exact recorded CSR and policy shown below.</p></div></div>
   {% for entry in ca_requests %}
-  <details><summary>#{{ entry['id'] }} — {{ entry['common_name'] }} — {{ entry['status'] }}</summary>
+  <details><summary>#{{ entry['id'] }} · {{ entry['common_name'] }} <span class="pill {{ 'status-pending' if entry['status'] == 'pending' else '' }}">{{ entry['status'] }}</span></summary>
     <p>Requested by {{ entry['requester'] }} · {{ entry['role'] }} · {{ entry['validity_days'] }} days</p>
     <p>CSR SHA-256: <span class="mono">{{ entry['fingerprint'] }}</span></p>
     <label>Recorded CSR<textarea rows="6" readonly>{{ entry['csr_pem'] }}</textarea></label>
@@ -80,23 +77,22 @@
       <p>Verify the CSR fingerprint and the requester’s authorization through your established approval procedure.</p>
       <button type="submit" {% if block_reason %}disabled{% endif %}>Approve and sign this CA request</button>
     </form>
-    {% else %}<p>A different administrator must approve your request.</p>{% endif %}
+    {% else %}<p class="notice">A different administrator must approve your request.</p>{% endif %}
     <form method="post" action="{{ url_for('reject_subordinate', request_id=entry['id']) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="danger">Reject request</button>
     </form>
     {% endif %}
   </details>
-  {% else %}<p>No CA signing requests.</p>{% endfor %}
+  {% else %}<div class="empty-state">No CA signing requests.</div>{% endfor %}
 </section>
-<section class="card" style="margin-top:1rem;">
-  <h2>Issued subordinate CA certificates</h2>
-  <p class="muted">Public certificates for CAs on other servers. This server holds no private keys for them. Most recent 100 certificates.</p>
+<section class="card">
+  <div class="section-heading"><div><h2>Issued subordinate CA certificates</h2><p>Public certificates for CAs on other servers. This server holds no private keys for them. Most recent 100 certificates.</p></div></div>
   <div class="table-scroll"><table>
     <thead><tr><th>Common name</th><th>Role</th><th>Status / expires</th><th>Artifacts</th></tr></thead>
     <tbody>{% for entry in issued_authorities %}<tr>
       <td>{{ entry['common_name'] }}</td><td>{{ entry['role'] }}</td>
-      <td>{{ 'Revoked' if entry['revoked_at'] else 'Issued' }}<br>{{ entry['not_after'][:10] }}</td>
+      <td><span class="pill {{ 'status-revoked' if entry['revoked_at'] else 'status-active' }}">{{ 'Revoked' if entry['revoked_at'] else 'Issued' }}</span><br><small>{{ entry['not_after'][:10] }}</small></td>
       <td class="actions">
         <a href="{{ url_for('download_subordinate', subordinate_id=entry['id'], artifact='cert') }}">Certificate</a>
         <a href="{{ url_for('download_subordinate', subordinate_id=entry['id'], artifact='parents') }}">Parent chain</a>

@@ -41,6 +41,10 @@ def main() -> None:
     required_files = {
         "usr/lib/pkimaster/app.py", "usr/lib/pkimaster/enterprise.py", "usr/lib/pkimaster/mfa.py",
         "usr/lib/pkimaster/pki.py", "usr/lib/pkimaster/pkimaster_server.py",
+        "usr/lib/pkimaster/identity.py", "usr/lib/pkimaster/key_backends.py",
+        "usr/lib/pkimaster/key_storage.py", "usr/lib/pkimaster/audit_integrity.py", "usr/lib/pkimaster/security.py",
+        "usr/lib/pkimaster/static/css/console.css",
+        "usr/lib/pkimaster/static/js/console.js",
         "usr/lib/pkimaster/templates/base.html", "usr/lib/pkimaster/templates/index.html",
         "usr/lib/pkimaster/templates/setup.html", "usr/lib/pkimaster/templates/login.html",
         "usr/lib/pkimaster/templates/settings.html", "usr/lib/systemd/system/pkimaster.service",

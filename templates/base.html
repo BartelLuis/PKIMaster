@@ -1,172 +1,73 @@
+{% macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{% if name == 'shield' %}<path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>
+{% elif name == 'grid' %}<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+{% elif name == 'users' %}<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M17 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v3"/>
+{% elif name == 'key' %}<circle cx="8" cy="9" r="5"/><path d="m12 13 8 8m-4-4 3-3m-6 3 3-3"/>
+{% elif name == 'audit' %}<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 12h6M9 17h4"/>
+{% elif name == 'settings' %}<path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3" fill="currentColor" stroke="none"/><circle cx="16" cy="17" r="3" fill="currentColor" stroke="none"/>
+{% elif name == 'identity' %}<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M6 16a3 3 0 0 1 6 0M15 9h3M15 13h3"/>
+{% elif name == 'logout' %}<path d="M9 3H4v18h5M9 12h12m-4-4 4 4-4 4"/>
+{% elif name == 'menu' %}<path d="M4 6h16M4 12h16M4 18h16"/>
+{% elif name == 'lock' %}<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>
+{% endif %}</svg>
+{%- endmacro %}
+{% set authentication_page = request.endpoint in ['enterprise.login', 'enterprise.setup', 'mfa.enroll', 'mfa.challenge', 'identity.oidc_callback'] %}
+{% macro nav_item(endpoint, label, glyph) -%}
+<a class="nav-link{% if request.endpoint == endpoint %} is-active{% endif %}" href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ title }}</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --bg: #0f172a;
-        --surface: #ffffff;
-        --muted: #475569;
-        --accent: #2563eb;
-        --accent-soft: #dbeafe;
-        --border: #dbe1ea;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        font-family: Inter, system-ui, sans-serif;
-        background: linear-gradient(180deg, #e2e8f0 0%, #f8fafc 100%);
-        color: #0f172a;
-      }
-      header {
-        background: var(--bg);
-        color: white;
-        padding: 2rem 1.5rem;
-      }
-      header h1, header p { margin: 0; }
-      header p { margin-top: .75rem; max-width: 60rem; color: #cbd5e1; }
-      main {
-        max-width: 1100px;
-        margin: -1.5rem auto 2rem;
-        padding: 0 1rem;
-      }
-      .grid {
-        display: grid;
-        gap: 1rem;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      }
-      .card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 18px;
-        padding: 1.25rem;
-        box-shadow: 0 14px 30px rgba(15, 23, 42, .06);
-      }
-      h2, h3 { margin-top: 0; }
-      label {
-        display: block;
-        font-size: .95rem;
-        color: var(--muted);
-        margin-bottom: .75rem;
-      }
-      input, select, textarea, button {
-        width: 100%;
-        margin-top: .35rem;
-        border-radius: 12px;
-        border: 1px solid #cbd5e1;
-        padding: .8rem .9rem;
-        font: inherit;
-      }
-      button {
-        background: var(--accent);
-        color: white;
-        border: none;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      button:hover { background: #1d4ed8; }
-      button:disabled { opacity: .5; cursor: not-allowed; }
-      nav { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-top: 1.25rem; }
-      nav a { color: #bfdbfe; }
-      nav form { margin-left: auto; }
-      nav button { width: auto; margin: 0; padding: .4rem .8rem; }
-      .danger { background: #b91c1c; }
-      .danger:hover { background: #991b1b; }
-      .status-revoked, .status-expired { background: #fee2e2; color: #991b1b; }
-      .status-active { background: #dcfce7; color: #166534; }
-      .table-scroll { overflow-x: auto; }
-      td, th { padding-right: 1rem; }
-      .stat strong { font-size: 2rem; display: block; margin: .5rem 0; }
-      .compact { display: flex; gap: .5rem; align-items: center; }
-      .compact button { width: auto; white-space: nowrap; }
-      input[type=checkbox] { width: auto; }
-      details > summary { cursor: pointer; color: var(--accent); margin: .75rem 0; }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th, td {
-        padding: .7rem .7rem .7rem 0;
-        border-bottom: 1px solid #e2e8f0;
-        text-align: left;
-        vertical-align: top;
-      }
-      .audit-table td:first-child { white-space: nowrap; }
-      .audit-table td:nth-child(5) { overflow-wrap: anywhere; min-width: 12rem; }
-      .pill {
-        display: inline-block;
-        padding: .2rem .55rem;
-        border-radius: 999px;
-        background: var(--accent-soft);
-        color: var(--accent);
-        font-size: .8rem;
-        font-weight: 700;
-        text-transform: uppercase;
-      }
-      .flash {
-        list-style: none;
-        padding: 0;
-        margin: 0 0 1rem;
-      }
-      .flash li {
-        padding: .85rem 1rem;
-        border-radius: 14px;
-        margin-bottom: .65rem;
-        border: 1px solid #bfdbfe;
-        background: #eff6ff;
-        color: #1d4ed8;
-      }
-      .actions a {
-        margin-right: .75rem;
-        color: var(--accent);
-        text-decoration: none;
-      }
-      .muted { color: var(--muted); }
-      .mono {
-        font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Consolas, monospace;
-        word-break: break-all;
-      }
-      @media (max-width: 720px) {
-        main { margin-top: -1rem; }
-      }
-    </style>
+    <meta name="color-scheme" content="light">
+    <title>{{ title }} · PKIMaster</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/console.css') }}">
+    <script src="{{ url_for('static', filename='js/console.js') }}" defer></script>
   </head>
-  <body>
-    <header>
-      <h1>PKIMaster</h1>
-      {% if current_user %}<p>{{ settings.organization }}</p>{% endif %}
-      <p>One server. One certificate authority. Separate keys for every trust tier.</p>
-      {% if current_user %}
-      <nav aria-label="Main navigation">
-        <a href="{{ url_for('index') }}">Certificates</a>
-        <a href="{{ url_for('enterprise.audit') }}">Audit log</a>
+  <body class="{{ 'auth-layout' if authentication_page or not current_user else 'console-layout' }}">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    {% if current_user and not authentication_page %}
+    <aside class="sidebar" id="console-navigation">
+      <a class="brand" href="{{ url_for('index') }}" aria-label="PKIMaster home"><span class="brand-mark">{{ icon('shield') }}</span><span>PKIMaster<small>Certificate operations</small></span></a>
+      <div class="workspace-label"><span class="eyebrow">Organization</span><strong>{{ settings.organization }}</strong></div>
+      <nav class="main-navigation" aria-label="Main navigation">
+        <span class="nav-section-label">Workspace</span>
+        {{ nav_item('index', 'Certificates', 'grid') }}
+        {{ nav_item('enterprise.audit', 'Audit log', 'audit') }}
+        {% if has_endpoint is defined and has_endpoint('security.overview') %}{{ nav_item('security.overview', 'Security overview', 'shield') }}{% endif %}
         {% if can_manage('admin') %}
-        <a href="{{ url_for('enterprise.settings') }}">Settings</a>
-        <a href="{{ url_for('enterprise.users') }}">Users</a>
+        <span class="nav-section-label">Administration</span>
+        {{ nav_item('enterprise.users', 'Users & access', 'users') }}
+        {% if has_endpoint is defined and has_endpoint('identity.settings') %}{{ nav_item('identity.settings', 'Identity providers', 'identity') }}{% endif %}
+        {% if has_endpoint is defined and has_endpoint('key_storage.settings') %}{{ nav_item('key_storage.settings', 'Key storage', 'key') }}{% endif %}
+        {{ nav_item('enterprise.settings', 'Settings', 'settings') }}
         {% endif %}
-        <a href="{{ url_for('enterprise.password') }}">Password</a>
-        <span>{{ current_user['username'] }} / {{ current_user['role'] }}</span>
-        <form method="post" action="{{ url_for('enterprise.logout') }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit">Sign out</button>
-        </form>
       </nav>
-      {% endif %}
-    </header>
-    <main>
-      {% with messages = get_flashed_messages() %}
-        {% if messages %}
-          <ul class="flash">
-            {% for message in messages %}
-              <li>{{ message }}</li>
-            {% endfor %}
-          </ul>
-        {% endif %}
-      {% endwith %}
-      {% block content %}{% endblock %}
-    </main>
+      <div class="sidebar-footer">
+        <div class="sidebar-assurance">{{ icon('shield') }}<p>One server. One CA.<small>Separate keys for every trust tier.</small></p></div>
+        <div class="account-summary"><span class="avatar" aria-hidden="true">{{ current_user['username'][:1]|upper }}</span><div><strong>{{ current_user['username'] }}</strong><small>{{ current_user['role'] }}</small></div></div>
+        <div class="account-actions">
+          {% if not current_user['auth_source'] or current_user['auth_source'] == 'local' %}<a href="{{ url_for('enterprise.password') }}">Change password</a>{% endif %}
+          <form method="post" action="{{ url_for('enterprise.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="signout-button" type="submit">{{ icon('logout') }} Sign out</button></form>
+        </div>
+      </div>
+    </aside>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-location"><button class="menu-button" type="button" aria-controls="console-navigation" aria-expanded="false" aria-label="Toggle navigation">{{ icon('menu') }}</button><span class="breadcrumb-root">Workspace</span><span class="breadcrumb-separator">/</span><strong>{{ title }}</strong></div>
+        {% if key_backend_label is defined %}<span class="environment-badge">{{ icon('key') }}{{ key_backend_label }}</span>{% endif %}
+      </header>
+    {% else %}
+    <div class="auth-brand"><a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">{{ icon('shield') }}</span><span>PKIMaster<small>Certificate operations</small></span></a><span class="auth-brand-note">One server. One certificate authority.</span></div>
+    <div class="auth-shell">
+    {% endif %}
+      <main id="main-content" tabindex="-1">
+        {% with messages = get_flashed_messages() %}{% if messages %}<ul class="flash" role="status" aria-live="polite">{% for message in messages %}<li>{{ icon('shield') }}<span>{{ message }}</span></li>{% endfor %}</ul>{% endif %}{% endwith %}
+        {% block content %}{% endblock %}
+      </main>
+      <footer class="page-footer"><span>PKIMaster</span><span>Certificate authority management</span></footer>
+    </div>
   </body>
 </html>
