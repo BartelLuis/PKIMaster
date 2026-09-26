@@ -24,8 +24,8 @@ updates:
       time: "06:30"
       timezone: Europe/Berlin
     open-pull-requests-limit: 10
-    # Preserve supported lower bounds when a compatible update can widen a range.
-    versioning-strategy: widen
+    # Keep compatible requirements unchanged; update them only when necessary.
+    versioning-strategy: increase-if-necessary
     commit-message:
       prefix: "build(deps)"
     groups:
