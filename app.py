@@ -88,15 +88,17 @@ def authority_block_reason(authority: sqlite3.Row) -> str:
     return ""
 
 
-def _split_pem_crl_blocks(pem: str) -> list[str]:
-    """Return PEM CRL blocks while rejecting non-whitespace content between them."""
+def _split_pem_crl_blocks(pem: str, *, strict: bool = True) -> list[str]:
+    """Return PEM CRL blocks, optionally rejecting non-whitespace content between them."""
     begin = "-----BEGIN X509 CRL-----"
     end = "-----END X509 CRL-----"
     blocks: list[str] = []
     lines = pem.splitlines(keepends=True)
     position = 0
     while position < len(lines):
-        while position < len(lines) and not lines[position].strip():
+        while position < len(lines) and (
+            not lines[position].strip() or (not strict and lines[position].strip() != begin)
+        ):
             position += 1
         if position >= len(lines):
             break
@@ -321,7 +323,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                     raise
                 canonical, revoked = pem, True
             # Reject rollback even after a cached CRL expires.
-            blocks = lambda value: [x509.load_pem_x509_crl(block.encode()) for block in _split_pem_crl_blocks(value)]
+            blocks = lambda value: [x509.load_pem_x509_crl(block.encode()) for block in _split_pem_crl_blocks(value, strict=False)]
             for old, new in zip(blocks(authority["parent_crls_pem"]), blocks(canonical)):
                 if new.last_update_utc < old.last_update_utc:
                     raise ValueError("An older parent CRL cannot replace a newer CRL.")
