@@ -129,7 +129,10 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
         blocks = split_pem_crl_blocks(pem)
         if not blocks:
             raise ValueError("Upload only PEM-encoded parent CRLs.")
-        crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
+        try:
+            crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
+        except ValueError as error:
+            raise ValueError("Upload only PEM-encoded parent CRLs.") from error
         if len(chain) < 2 or len(crls) != len(chain) - 1:
             raise ValueError("Provide one full CRL per parent, ordered immediate issuer to root.")
         revoked = False
@@ -329,20 +332,21 @@ def create_app(test_config: dict | None = None) -> Flask:
             # Reject rollback even after a cached CRL expires.
             old_blocks = split_pem_crl_blocks(authority["parent_crls_pem"], strict=False)
             new_blocks = split_pem_crl_blocks(canonical, strict=False)
-            if len(old_blocks) != len(new_blocks):
-                raise ValueError("Parent CRL bundle is inconsistent with stored CRLs.")
-            old_crls = [x509.load_pem_x509_crl(block.encode()) for block in old_blocks]
-            new_crls = [x509.load_pem_x509_crl(block.encode()) for block in new_blocks]
-            for old, new in zip(old_crls, new_crls):
-                if new.last_update_utc < old.last_update_utc:
-                    raise ValueError("An older parent CRL cannot replace a newer CRL.")
-                try:
-                    old_number = old.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
-                    new_number = new.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
-                    if new_number < old_number or (new_number == old_number and new.public_bytes(serialization.Encoding.DER) != old.public_bytes(serialization.Encoding.DER)):
-                        raise ValueError("Parent CRL number rollback is not allowed.")
-                except x509.ExtensionNotFound:
-                    raise ValueError("Parent CRLs must include a CRL number.") from None
+            if old_blocks:
+                if len(old_blocks) != len(new_blocks):
+                    raise ValueError("Parent CRL bundle is inconsistent with stored CRLs.")
+                old_crls = [x509.load_pem_x509_crl(block.encode()) for block in old_blocks]
+                new_crls = [x509.load_pem_x509_crl(block.encode()) for block in new_blocks]
+                for old, new in zip(old_crls, new_crls):
+                    if new.last_update_utc < old.last_update_utc:
+                        raise ValueError("An older parent CRL cannot replace a newer CRL.")
+                    try:
+                        old_number = old.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+                        new_number = new.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+                        if new_number < old_number or (new_number == old_number and new.public_bytes(serialization.Encoding.DER) != old.public_bytes(serialization.Encoding.DER)):
+                            raise ValueError("Parent CRL number rollback is not allowed.")
+                    except x509.ExtensionNotFound:
+                        raise ValueError("Parent CRLs must include a CRL number.") from None
             db.execute("UPDATE authorities SET parent_crls_pem=? WHERE id=?", (canonical, authority["id"]))
             if revoked:
                 db.execute("UPDATE authorities SET revoked_at=COALESCE(revoked_at, ?), revocation_reason=COALESCE(revocation_reason, 'unspecified') WHERE id=?", (utc_now().isoformat(), authority["id"]))
