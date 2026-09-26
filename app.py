@@ -330,8 +330,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                     raise
                 canonical, revoked = pem, True
             # Reject rollback even after a cached CRL expires.
-            old_blocks = split_pem_crl_blocks(authority["parent_crls_pem"], strict=False)
-            new_blocks = split_pem_crl_blocks(canonical, strict=False)
+            old_blocks = split_pem_crl_blocks(authority["parent_crls_pem"])
+            new_blocks = split_pem_crl_blocks(canonical)
             if old_blocks:
                 if len(old_blocks) != len(new_blocks):
                     raise ValueError("Parent CRL bundle is inconsistent with stored CRLs.")
