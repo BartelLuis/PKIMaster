@@ -433,7 +433,8 @@ class AzureKeyVaultSigner(ExternalSigner):
     def _access_token(self):
         if self._token and self._token_expires > time.time() + 60:
             return self._token
-        audience = "https://managedhsm.azure.net" if ".managedhsm.azure.net" in self._config["vault_url"] else "https://vault.azure.net"
+        vault_host = urlsplit(self._config["vault_url"]).hostname or ""
+        audience = "https://managedhsm.azure.net" if vault_host.endswith(".managedhsm.azure.net") else "https://vault.azure.net"
         response = _request_json("POST", "https://login.microsoftonline.com/" + self._config["tenant_id"] + "/oauth2/v2.0/token", {
             "grant_type": "client_credentials", "client_id": self._config["client_id"],
             "client_secret": self._config["client_secret"], "scope": audience + "/.default",
