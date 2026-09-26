@@ -88,30 +88,36 @@ def authority_block_reason(authority: sqlite3.Row) -> str:
     return ""
 
 
-def split_pem_crl_blocks(pem: str) -> list[str]:
+def split_pem_crl_blocks(pem: str, *, strict: bool = True) -> list[str]:
+    """Return PEM CRL blocks, optionally rejecting non-whitespace content between them."""
     begin_marker = "-----BEGIN X509 CRL-----"
     end_marker = "-----END X509 CRL-----"
     blocks: list[str] = []
+    lines = pem.splitlines(keepends=True)
     cursor = 0
-    while True:
-        while cursor < len(pem) and pem[cursor].isspace():
+    while cursor < len(lines):
+        if strict:
+            while cursor < len(lines) and not lines[cursor].strip():
+                cursor += 1
+        else:
+            while cursor < len(lines) and lines[cursor].strip() != begin_marker:
+                cursor += 1
+        if cursor >= len(lines):
+            break
+        if lines[cursor].strip() != begin_marker:
+            raise ValueError("Upload only PEM-encoded parent CRLs.")
+        block = [lines[cursor]]
+        cursor += 1
+        while cursor < len(lines):
+            block.append(lines[cursor])
+            if lines[cursor].strip() == end_marker:
+                cursor += 1
+                blocks.append("".join(block))
+                break
             cursor += 1
-        if cursor == len(pem):
-            return blocks
-        if not pem.startswith(begin_marker, cursor):
+        else:
             raise ValueError("Upload only PEM-encoded parent CRLs.")
-        content_start = cursor + len(begin_marker)
-        end = pem.find(end_marker, content_start)
-        if end < 0:
-            raise ValueError("Upload only PEM-encoded parent CRLs.")
-        content = pem[content_start:end]
-        if begin_marker in content or not content.strip():
-            raise ValueError("Upload only PEM-encoded parent CRLs.")
-        end += len(end_marker)
-        while end < len(pem) and pem[end].isspace():
-            end += 1
-        blocks.append(pem[cursor:end])
-        cursor = end
+    return blocks
 
 
 def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
@@ -121,7 +127,12 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
     try:
         chain = x509.load_pem_x509_certificates((authority["certificate_pem"] + authority["parent_chain_pem"]).encode())
         blocks = split_pem_crl_blocks(pem)
-        crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
+        if not blocks:
+            raise ValueError("Upload only PEM-encoded parent CRLs.")
+        try:
+            crls = [x509.load_pem_x509_crl(block.encode()) for block in blocks]
+        except ValueError as error:
+            raise ValueError("Upload only PEM-encoded parent CRLs.") from error
         if len(chain) < 2 or len(crls) != len(chain) - 1:
             raise ValueError("Provide one full CRL per parent, ordered immediate issuer to root.")
         revoked = False
@@ -319,17 +330,23 @@ def create_app(test_config: dict | None = None) -> Flask:
                     raise
                 canonical, revoked = pem, True
             # Reject rollback even after a cached CRL expires.
-            blocks = lambda value: [x509.load_pem_x509_crl(block.encode()) for block in split_pem_crl_blocks(value)]
-            for old, new in zip(blocks(authority["parent_crls_pem"]), blocks(canonical)):
-                if new.last_update_utc < old.last_update_utc:
-                    raise ValueError("An older parent CRL cannot replace a newer CRL.")
-                try:
-                    old_number = old.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
-                    new_number = new.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
-                    if new_number < old_number or (new_number == old_number and new.public_bytes(serialization.Encoding.DER) != old.public_bytes(serialization.Encoding.DER)):
-                        raise ValueError("Parent CRL number rollback is not allowed.")
-                except x509.ExtensionNotFound:
-                    raise ValueError("Parent CRLs must include a CRL number.") from None
+            old_blocks = split_pem_crl_blocks(authority["parent_crls_pem"])
+            new_blocks = split_pem_crl_blocks(canonical)
+            if old_blocks:
+                if len(old_blocks) != len(new_blocks):
+                    raise ValueError("Parent CRL bundle is inconsistent with stored CRLs.")
+                old_crls = [x509.load_pem_x509_crl(block.encode()) for block in old_blocks]
+                new_crls = [x509.load_pem_x509_crl(block.encode()) for block in new_blocks]
+                for old, new in zip(old_crls, new_crls):
+                    if new.last_update_utc < old.last_update_utc:
+                        raise ValueError("An older parent CRL cannot replace a newer CRL.")
+                    try:
+                        old_number = old.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+                        new_number = new.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+                        if new_number < old_number or (new_number == old_number and new.public_bytes(serialization.Encoding.DER) != old.public_bytes(serialization.Encoding.DER)):
+                            raise ValueError("Parent CRL number rollback is not allowed.")
+                    except x509.ExtensionNotFound:
+                        raise ValueError("Parent CRLs must include a CRL number.") from None
             db.execute("UPDATE authorities SET parent_crls_pem=? WHERE id=?", (canonical, authority["id"]))
             if revoked:
                 db.execute("UPDATE authorities SET revoked_at=COALESCE(revoked_at, ?), revocation_reason=COALESCE(revocation_reason, 'unspecified') WHERE id=?", (utc_now().isoformat(), authority["id"]))
