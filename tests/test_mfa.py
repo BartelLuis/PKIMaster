@@ -79,6 +79,22 @@ class MfaAccessTests(unittest.TestCase):
         self.assertNotIn(secret.encode(), self.client.get("/audit").data)
         self.assertNotIn(secret.encode(), self.client.get("/mfa/enroll", follow_redirects=True).data)
 
+    def test_password_only_browser_cannot_claim_unenrolled_account(self):
+        # Consume the setup ceremony's one permitted display, then simulate an
+        # attacker arriving later with only the administrator password.
+        enrollment_page = self.client.get("/mfa/enroll")
+        user = self.user()
+        with self.app.app_context():
+            secret = decrypt_secret(user["mfa_pending_secret"])
+        self.assertIn(secret.encode(), enrollment_page.data)
+        attacker = self.login()
+        page = attacker.get("/mfa/enroll")
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn(secret.encode(), page.data)
+        invalid = self.post("/mfa/enroll", {"code": "000000"}, attacker)
+        self.assertEqual(invalid.status_code, 401)
+        self.assertNotIn(secret.encode(), invalid.data)
+
     def test_replayed_codes_fail_and_next_code_succeeds(self):
         self.finish()
         user = self.user()

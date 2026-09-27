@@ -69,6 +69,12 @@ def decrypt_secret(ciphertext: str) -> str:
     return plaintext.removeprefix("pkimaster-mfa-v1:")
 
 
+def new_enrollment_secret() -> tuple[str, str]:
+    """Return a plaintext setup key and its encrypted database representation."""
+    secret = base64.b32encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+    return secret, encrypt_secret(secret)
+
+
 def _services():
     from enterprise import _db, audit_event
     return _db(), audit_event
@@ -128,8 +134,7 @@ def _verify(enrollment: bool):
     expired = enrollment and (not user["mfa_pending_created"] or now - user["mfa_pending_created"] >= ENROLLMENT_SECONDS)
     if not ciphertext or expired:
         db.rollback()
-        flash("Authenticator enrollment expired. Add the new setup key and try again.")
-        return redirect(url_for("mfa.enroll"))
+        return Response("Authenticator enrollment is unavailable. Ask an administrator for a new setup key.", status=403)
     try:
         secret = decrypt_secret(ciphertext)
         counter = verify_totp(secret, request.form.get("code", "").strip(), user["mfa_last_counter"])
@@ -140,7 +145,7 @@ def _verify(enrollment: bool):
         _failure(db, audit, user, buckets, entries, now)
         flash("Invalid or already used code. Wait for a new code and try again.")
         return render_template("mfa_enroll.html" if enrollment else "mfa_challenge.html",
-                               title="Set up authenticator" if enrollment else "Verify authenticator", secret=secret if enrollment else None), 401
+                               title="Set up authenticator" if enrollment else "Verify authenticator", secret=None), 401
     # The write lock covers validation and consumption, across all WSGI workers.
     if enrollment:
         db.execute("""UPDATE users SET mfa_secret = mfa_pending_secret, mfa_pending_secret = NULL,
@@ -169,7 +174,7 @@ def enroll():
         return redirect(url_for("index") if session.get("mfa_verified") is True else url_for("mfa.challenge"))
     if request.method == "POST":
         return _verify(enrollment=True)
-    db, audit = _services()
+    db, _ = _services()
     db.execute("BEGIN IMMEDIATE")
     user = _current_user(db)
     if user is None:
@@ -179,19 +184,20 @@ def enroll():
         db.rollback()
         return redirect(url_for("mfa.challenge"))
     now = int(time.time())
-    if not user["mfa_pending_secret"] or not user["mfa_pending_created"] or now - user["mfa_pending_created"] >= ENROLLMENT_SECONDS:
-        secret = base64.b32encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
-        db.execute("UPDATE users SET mfa_pending_secret = ?, mfa_pending_created = ? WHERE id = ?",
-                   (encrypt_secret(secret), now, user["id"]))
-        audit("user.mfa_enrollment_started", "user", str(user["id"]))
-    else:
+    if user["mfa_pending_secret"] and user["mfa_pending_created"] and now - user["mfa_pending_created"] < ENROLLMENT_SECONDS:
         try:
             secret = decrypt_secret(user["mfa_pending_secret"])
         except (InvalidToken, ValueError, UnicodeError):
             db.rollback()
             return Response("The stored authenticator credential cannot be read. Contact your installation administrator.", status=503)
+    else:
+        db.rollback()
+        return Response("Authenticator enrollment is unavailable. Ask an administrator for a new setup key.", status=403)
     db.commit()
-    return render_template("mfa_enroll.html", title="Set up authenticator", secret=secret)
+    # Only the trusted setup ceremony may display its own key. Keys provisioned
+    # by an administrator must be delivered to the user over a separate channel.
+    display_secret = secret if session.pop("mfa_enrollment_authorized", False) else None
+    return render_template("mfa_enroll.html", title="Set up authenticator", secret=display_secret)
 
 
 @mfa.route("/mfa/challenge", methods=["GET", "POST"])

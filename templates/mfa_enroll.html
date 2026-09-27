@@ -6,11 +6,11 @@
   <p>All accounts require a password and an authenticator code before accessing the PKI. Add a new time-based account to an authenticator that supports SHA-256.</p>
   <dl class="setup-details">
     <dt>Account</dt><dd>{{ current_user['username'] }} — {{ settings.organization }}</dd>
-    <dt>Setup key</dt><dd id="mfa-setup-key" class="mono">{{ secret }}</dd>
+    {% if secret %}<dt>Setup key</dt><dd id="mfa-setup-key" class="mono">{{ secret }}</dd>{% endif %}
     <dt>Algorithm</dt><dd>SHA-256</dd>
     <dt>Digits / interval</dt><dd>6 digits / 30 seconds</dd>
   </dl>
-  <p class="notice notice-warning">Store a protected backup of this setup key before continuing. There are no recovery codes or automated MFA resets in this version. A password reset does not remove the authenticator requirement.</p>
+  <p class="notice notice-warning">{% if secret %}Store a protected backup of this setup key before continuing.{% else %}Obtain the one-time setup key from your administrator over a separate protected channel and add it to your authenticator.{% endif %} There are no recovery codes or automated MFA resets in this version. A password reset does not remove the authenticator requirement.</p>
   <form method="post" action="{{ url_for('mfa.enroll') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Current authenticator code <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required autofocus></label>

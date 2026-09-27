@@ -489,12 +489,18 @@ def setup():
             if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
                 db.rollback()
                 abort(404)
-            cursor = db.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')", (username, password_hash))
+            from mfa import new_enrollment_secret
+            _, encrypted_enrollment_secret = new_enrollment_secret()
+            cursor = db.execute("""INSERT INTO users
+                (username, password_hash, role, mfa_pending_secret, mfa_pending_created)
+                VALUES (?, ?, 'admin', ?, ?)""",
+                (username, password_hash, encrypted_enrollment_secret, int(time.time())))
             _write_settings(values)
             g.user = db.execute("SELECT * FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone()
             audit_event("installation.completed", "user", str(cursor.lastrowid))
             db.commit()
             _start_session(g.user)
+            session["mfa_enrollment_authorized"] = True
             flash("Installation complete. Enroll your authenticator to finish securing the administrator account.")
             return redirect(url_for("mfa.enroll"))
         except ValueError as exc:
@@ -573,10 +579,16 @@ def users():
                     password = secrets.token_urlsafe(64)
                 if role not in ROLES:
                     raise ValueError("Select a valid role.")
-                cursor = db.execute("INSERT INTO users (username, password_hash, role, auth_source, external_issuer, external_subject) VALUES (?, ?, ?, ?, ?, ?)",
-                                    (username, generate_password_hash(password), role, source, issuer, subject))
+                from mfa import new_enrollment_secret
+                enrollment_secret, encrypted_enrollment_secret = new_enrollment_secret()
+                cursor = db.execute("""INSERT INTO users
+                    (username, password_hash, role, auth_source, external_issuer, external_subject,
+                     mfa_pending_secret, mfa_pending_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (username, generate_password_hash(password), role, source, issuer, subject,
+                     encrypted_enrollment_secret, int(time.time())))
                 audit_event("user.created", "user", str(cursor.lastrowid), f"username={username}; role={role}")
-            elif action in {"deactivate", "activate", "reset_password"}:
+                flash(f"Authenticator setup key for {username}: {enrollment_secret}. Transfer it over a separate protected channel; it expires in 10 minutes.")
+            elif action in {"deactivate", "activate", "reset_password", "reset_mfa_enrollment"}:
                 try:
                     user_id = int(request.form.get("user_id", ""))
                     if not 1 <= user_id <= 9223372036854775807:
@@ -594,12 +606,21 @@ def users():
                     db.execute("UPDATE users SET active = 0, session_version = session_version + 1 WHERE id = ?", (user_id,))
                 elif action == "activate":
                     db.execute("UPDATE users SET active = 1, session_version = session_version + 1 WHERE id = ?", (user_id,))
-                else:
+                elif action == "reset_password":
                     if user["auth_source"] != "local":
                         raise ValueError("External passwords must be changed at the identity provider.")
                     password = request.form.get("password", "")
                     _validate_password(password)
                     db.execute("UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?", (generate_password_hash(password), user_id))
+                else:
+                    if user["mfa_secret"]:
+                        raise ValueError("An enrolled authenticator cannot be replaced through first-enrollment provisioning.")
+                    from mfa import new_enrollment_secret
+                    enrollment_secret, encrypted_enrollment_secret = new_enrollment_secret()
+                    db.execute("""UPDATE users SET mfa_pending_secret = ?, mfa_pending_created = ?,
+                        session_version = session_version + 1 WHERE id = ?""",
+                        (encrypted_enrollment_secret, int(time.time()), user_id))
+                    flash(f"Authenticator setup key for {user['username']}: {enrollment_secret}. Transfer it over a separate protected channel; it expires in 10 minutes.")
                 audit_event("user." + action, "user", str(user_id))
             else:
                 raise ValueError("Unknown user action.")
