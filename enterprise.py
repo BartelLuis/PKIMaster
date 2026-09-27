@@ -495,10 +495,10 @@ def setup():
             audit_event("installation.completed", "user", str(cursor.lastrowid))
             db.commit()
             _start_session(g.user)
-            flash("Installation complete. Enroll your authenticator to finish securing the administrator account.")
+            flash("Installation complete. Enroll your authenticator to finish securing the administrator account.", "success")
             return redirect(url_for("mfa.enroll"))
         except ValueError as exc:
-            flash(str(exc))
+            flash(str(exc), "error")
             return render_template("setup.html", title="Set up PKIMaster"), 400
     return render_template("setup.html", title="Set up PKIMaster")
 
@@ -545,11 +545,11 @@ def settings():
                 _install_tls(tls_pem)
                 audit_event("settings.https_certificate_updated", "settings")
             _db().commit()
-            flash("Settings saved. The packaged HTTPS service restarts automatically when its listener or certificate changes; reconnect at the configured address and port.")
+            flash("Settings saved. The packaged HTTPS service restarts automatically when its listener or certificate changes; reconnect at the configured address and port.", "success")
             return redirect(url_for("enterprise.settings"))
         except ValueError as exc:
             _db().rollback()
-            flash(str(exc))
+            flash(str(exc), "error")
             return render_template("settings.html", title="Settings"), 400
     return render_template("settings.html", title="Settings")
 
@@ -606,11 +606,11 @@ def users():
             else:
                 raise ValueError("Unknown user action.")
             db.commit()
-            flash("User account updated.")
+            flash("User account updated.", "success")
             return redirect(url_for("enterprise.users"))
         except (ValueError, sqlite3.IntegrityError) as exc:
             db.rollback()
-            flash("That username or external identity is already in use." if isinstance(exc, sqlite3.IntegrityError) else str(exc))
+            flash("That username or external identity is already in use." if isinstance(exc, sqlite3.IntegrityError) else str(exc), "error")
             return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active, auth_source, external_issuer, external_subject FROM users ORDER BY username").fetchall()), 400
     return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active, auth_source, external_issuer, external_subject FROM users ORDER BY username").fetchall())
 
@@ -632,10 +632,10 @@ def password():
             audit_event("user.password_changed", "user", str(g.user["id"]))
             _db().commit()
             session.clear()
-            flash("Password changed. Sign in again; all previous sessions have been revoked.")
+            flash("Password changed. Sign in again; all previous sessions have been revoked.", "success")
             return redirect(url_for("enterprise.login"))
         except ValueError as exc:
-            flash(str(exc))
+            flash(str(exc), "error")
             return render_template("login.html", title="Change password", change_password=True), 400
     return render_template("login.html", title="Change password", change_password=True)
 

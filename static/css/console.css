@@ -762,18 +762,41 @@ img,svg {
   align-items:flex-start;
   gap:10px;
   padding:14px 17px;
-  border:1px solid #badacc;
+  border:1px solid #d9e8f1;
   border-radius:8px;
-  background:#edf7f2;
-  color:#265f4c;
+  background:#edf5fa;
+  color:#3d637a;
   font-size:.87rem;
   margin-bottom:8px;
+}
+
+.flash .flash-success {
+  border-color:#badacc;
+  background:#edf7f2;
+  color:#265f4c;
+}
+
+.flash .flash-error {
+  border-color:#efd4d8;
+  background:#fdf0f1;
+  color:#953744;
+}
+
+.flash .flash-warning {
+  border-color:#f0dfba;
+  background:#fff8e9;
+  color:#866121;
 }
 
 .flash .icon {
   width:18px;
   height:18px;
   margin-top:1px;
+}
+
+.flash li>span {
+  min-width:0;
+  overflow-wrap:anywhere;
 }
 
 label {
@@ -1406,6 +1429,39 @@ td details[open] {
   min-height:51px;
 }
 
+.mfa-qr {
+  margin:22px auto;
+  width:280px;
+  max-width:100%;
+  background:#fff;
+}
+
+.mfa-qr svg {
+  display:block;
+  width:100%;
+  height:auto;
+}
+
+.mfa-manual-setup {
+  margin:20px 0;
+  font-size:.84rem;
+}
+
+.mfa-manual-setup summary {
+  cursor:pointer;
+  color:var(--accent);
+  font-weight:600;
+}
+
+.mfa-manual-setup p {
+  color:var(--muted);
+}
+
+#mfa-setup-uri {
+  font-size:.75rem;
+  overflow-wrap:anywhere;
+}
+
 .setup-details {
   background:#f7f9fc;
   border:1px solid var(--border);
@@ -1427,6 +1483,7 @@ td details[open] {
 .setup-details dd {
   margin:3px 0 0;
   font-size:.86rem;
+  overflow-wrap:anywhere;
 }
 
 .setup-details #mfa-setup-key {

@@ -147,11 +147,11 @@ def settings():
             _save(values)
             audit_event("key_storage.updated", "settings", detail=backend + (" credentials verified" if authority else " configured"))
             db.commit()
-            flash("Key storage saved. The CA key is permanently bound when the CA is initialized." if not authority else "Credentials verified against the existing CA key and saved.")
+            flash("Key storage saved. The CA key is permanently bound when the CA is initialized." if not authority else "Credentials verified against the existing CA key and saved.", "success")
             return redirect(url_for("key_storage.settings"))
         except (ValueError, OSError) as exc:
             db.rollback()
-            flash(str(exc))
+            flash(str(exc), "error")
             saved = configuration()
             status = 400
     else:

@@ -11,15 +11,41 @@ import hmac
 import re
 import secrets
 import time
+from urllib.parse import quote, urlencode
 
 from cryptography.fernet import InvalidToken
 from flask import Blueprint, Response, flash, g, redirect, render_template, request, session, url_for
+from markupsafe import Markup
+import segno
 
 
 mfa = Blueprint("mfa", __name__)
 PERIOD = 30
 ENROLLMENT_SECONDS = 600
 THROTTLE_SECONDS = 900
+
+
+def provisioning_uri(secret: str, username: str, organization: str) -> str:
+    """Carry every TOTP parameter so authenticators do not default to SHA-1."""
+    # A colon separates issuer and account in the key URI format; neither
+    # component may contain another colon, including an encoded one.
+    # Bound the label's encoded length so long Unicode names still produce a
+    # scannable QR on small screens. The full organization stays in the UI.
+    organization_label = organization.replace(":", " ").strip().encode("utf-8")[:40].decode("utf-8", errors="ignore")
+    issuer = "PKIMaster (" + organization_label + ")"
+    label = quote(issuer, safe="") + ":" + quote(username.replace(":", " "), safe="")
+    parameters = urlencode({"secret": secret, "issuer": issuer, "algorithm": "SHA256", "digits": 6, "period": PERIOD})
+    return "otpauth://totp/" + label + "?" + parameters
+
+
+def _enrollment_page(secret: str):
+    from enterprise import get_setting
+    uri = provisioning_uri(secret, g.user["username"], get_setting("organization"))
+    # Encode locally. Only the encoder's geometric SVG output is marked safe;
+    # labels and the copyable URI remain escaped by the template engine.
+    qr_svg = Markup(segno.make_qr(uri, error="m").svg_inline(scale=4, border=4, light="white", omitsize=True))
+    return render_template("mfa_enroll.html", title="Set up authenticator", secret=secret,
+                           provisioning_uri=uri, qr_svg=qr_svg)
 
 
 def time_counter(at_time: float | None = None) -> int:
@@ -128,7 +154,7 @@ def _verify(enrollment: bool):
     expired = enrollment and (not user["mfa_pending_created"] or now - user["mfa_pending_created"] >= ENROLLMENT_SECONDS)
     if not ciphertext or expired:
         db.rollback()
-        flash("Authenticator enrollment expired. Add the new setup key and try again.")
+        flash("Authenticator enrollment expired. Scan the new QR code or copy the new setup URI and try again.", "warning")
         return redirect(url_for("mfa.enroll"))
     try:
         secret = decrypt_secret(ciphertext)
@@ -138,9 +164,12 @@ def _verify(enrollment: bool):
         return Response("The stored authenticator credential cannot be read. Contact your installation administrator.", status=503)
     if counter is None:
         _failure(db, audit, user, buckets, entries, now)
-        flash("Invalid or already used code. Wait for a new code and try again.")
-        return render_template("mfa_enroll.html" if enrollment else "mfa_challenge.html",
-                               title="Set up authenticator" if enrollment else "Verify authenticator", secret=secret if enrollment else None), 401
+        if enrollment:
+            flash("Invalid code. Scan the QR code or copy the full setup URI so your authenticator uses SHA-256, "
+                  "6 digits and 30 seconds. Check that your device and server clocks are synchronized, then try a fresh code.", "error")
+            return _enrollment_page(secret), 401
+        flash("Invalid or already used code. Wait for a new code and try again.", "error")
+        return render_template("mfa_challenge.html", title="Verify authenticator"), 401
     # The write lock covers validation and consumption, across all WSGI workers.
     if enrollment:
         db.execute("""UPDATE users SET mfa_secret = mfa_pending_secret, mfa_pending_secret = NULL,
@@ -159,7 +188,7 @@ def _verify(enrollment: bool):
     session.update(user_id=refreshed["id"], session_version=refreshed["session_version"],
                    password_authenticated=True, mfa_verified=True, last_seen=now)
     g.user = refreshed
-    flash("Authenticator verified.")
+    flash("Authenticator verified.", "success")
     return redirect(url_for("index"))
 
 
@@ -191,7 +220,7 @@ def enroll():
             db.rollback()
             return Response("The stored authenticator credential cannot be read. Contact your installation administrator.", status=503)
     db.commit()
-    return render_template("mfa_enroll.html", title="Set up authenticator", secret=secret)
+    return _enrollment_page(secret)
 
 
 @mfa.route("/mfa/challenge", methods=["GET", "POST"])

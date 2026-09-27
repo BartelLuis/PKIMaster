@@ -73,11 +73,11 @@ Issue certificates through the server's single CA, using certificate requests, c
 
 ## Install with APT
 
-Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.0-1**, download [`pkimaster_0.2.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.0-1/pkimaster_0.2.0-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
+Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.1-1**, download [`pkimaster_0.2.1-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.1-1/pkimaster_0.2.1-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.2.0-1_all.deb
+sudo apt install ./pkimaster_0.2.1-1_all.deb
 ```
 
 Release assets also include `SHA256SUMS` and build metadata.
@@ -86,9 +86,9 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 
 ```sh
 sudo apt update
-sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-pykcs11 softhsm2
+sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.2.0-1_all.deb
+sudo apt install ./dist/pkimaster_0.2.1-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. A signed public APT repository is not published by this project yet; `apt install ./…deb` resolves dependencies using your configured Debian repositories.
@@ -101,7 +101,7 @@ ssh -L 8443:127.0.0.1:8443 administrator@pki-server
 
 Open **https://localhost:8443/setup** in your browser. The initial certificate is self-signed, so the browser will ask you to trust it. Use a local connection or an SSH connection to a server whose host key you have verified for initial setup.
 
-Create the first administrator and organization through the setup page. There are no default credentials. Setup accepts only loopback connections and closes permanently after the first administrator is created. All users must enroll a SHA-256 TOTP authenticator (six digits, 30 seconds) before accessing the PKI. Store the enrollment key securely: automated MFA recovery is not yet available.
+Create the first administrator and organization through the setup page. There are no default credentials. Setup accepts only loopback connections and closes permanently after the first administrator is created. All users must enroll a SHA-256 TOTP authenticator (six digits, 30 seconds) before accessing the PKI. Scan the enrollment QR code or copy the complete `otpauth://` URI into your authenticator, including Bitwarden, so it uses the correct algorithm and settings. Store the enrollment key securely: automated MFA recovery is not yet available.
 
 ## Web-only configuration
 

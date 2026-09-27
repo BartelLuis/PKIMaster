@@ -284,13 +284,13 @@ def create_app(test_config: dict | None = None) -> Flask:
             audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
             queue_publication(db)
             db.commit()
-            flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.")
+            flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.", "success")
         except sqlite3.IntegrityError:
             db.rollback()
-            flash("Only one CA is permitted per server; its identity cannot be replaced.")
+            flash("Only one CA is permitted per server; its identity cannot be replaced.", "error")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/activate")
@@ -315,10 +315,10 @@ def create_app(test_config: dict | None = None) -> Flask:
             audit_event("authority.activated", "authority", str(authority["id"]), cert.fingerprint(hashes.SHA256()).hex())
             queue_publication(db)
             db.commit()
-            flash("CA certificate imported. Import current parent CRLs to enable signing.")
+            flash("CA certificate imported. Import current parent CRLs to enable signing.", "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/parent-crls")
@@ -361,10 +361,10 @@ def create_app(test_config: dict | None = None) -> Flask:
                 db.execute("UPDATE authorities SET revoked_at=COALESCE(revoked_at, ?), revocation_reason=COALESCE(revocation_reason, 'unspecified') WHERE id=?", (utc_now().isoformat(), authority["id"]))
             audit_event("authority.parent_crls_updated", "authority", str(authority["id"]), "revoked" if revoked else "valid")
             db.commit()
-            flash("Parent CRLs imported. CA signing is blocked." if revoked else "Parent CRLs validated and imported.")
+            flash("Parent CRLs imported. CA signing is blocked." if revoked else "Parent CRLs validated and imported.", "warning" if revoked else "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/requests")
@@ -389,13 +389,13 @@ def create_app(test_config: dict | None = None) -> Flask:
                 (authority["id"], names[0].value, role, days, csr.public_bytes(serialization.Encoding.PEM).decode(), fingerprint, g.user["id"]))
             audit_event("ca_request.submitted", "ca_request", str(result.lastrowid), fingerprint)
             db.commit()
-            flash("CA request recorded. A different administrator must review and approve it before signing.")
+            flash("CA request recorded. A different administrator must review and approve it before signing.", "success")
         except (UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType):
             db.rollback()
-            flash("The CA request contains unsupported cryptographic data or extensions.")
+            flash("The CA request contains unsupported cryptographic data or extensions.", "error")
         except (ValueError, sqlite3.IntegrityError) as error:
             db.rollback()
-            flash(str(error) if isinstance(error, ValueError) else "This CA request has already been submitted.")
+            flash(str(error) if isinstance(error, ValueError) else "This CA request has already been submitted.", "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/requests/<int:request_id>/approve")
@@ -423,10 +423,10 @@ def create_app(test_config: dict | None = None) -> Flask:
             audit_event("ca_request.approved", "ca_request", str(request_id), f"requester={pending['requested_by']}; sha256={pending['fingerprint']}")
             audit_event("subordinate.issued", "issued_authority", str(result.lastrowid), pending["common_name"])
             db.commit()
-            flash("Subordinate CA certificate signed. Transfer its certificate and parent chain to its own server.")
+            flash("Subordinate CA certificate signed. Transfer its certificate and parent chain to its own server.", "success")
         except (ValueError, sqlite3.IntegrityError) as error:
             db.rollback()
-            flash(str(error) if isinstance(error, ValueError) else "The CA request could not be signed.")
+            flash(str(error) if isinstance(error, ValueError) else "The CA request could not be signed.", "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/requests/<int:request_id>/reject")
@@ -440,7 +440,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         if updated:
             audit_event("ca_request.rejected", "ca_request", str(request_id))
         db.commit()
-        flash("CA request rejected." if updated else "This CA request is not pending.")
+        flash("CA request rejected." if updated else "This CA request is not pending.", "success" if updated else "error")
         return redirect(url_for("index"))
 
     @app.post("/certificates")
@@ -479,10 +479,10 @@ def create_app(test_config: dict | None = None) -> Flask:
                 (common_name, authority["id"], sans, pem, encrypt_private_key(key) if key else "", serial, start, end, profile))
             audit_event("certificate.issued", "certificate", str(result.lastrowid), f"{common_name}; profile={profile}; source={'CSR' if not key else 'generated'}")
             db.commit()
-            flash(f"Issued certificate '{common_name}'.")
+            flash(f"Issued certificate '{common_name}'.", "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     def revoke(table: str, record_id: int) -> Response:
@@ -508,12 +508,12 @@ def create_app(test_config: dict | None = None) -> Flask:
             queue_publication(db)
             db.commit()
             if table == "authorities" and issuer_id is None:
-                flash("Local CA disabled. For a subordinate CA, request revocation on its parent server and distribute its updated CRL. For a root, remove trust on relying parties.")
+                flash("Local CA disabled. For a subordinate CA, request revocation on its parent server and distribute its updated CRL. For a root, remove trust on relying parties.", "warning")
             else:
-                flash("Certificate revoked. The updated CRL is queued for configured external publication and available on the next CRL download.")
+                flash("Certificate revoked. The updated CRL is queued for configured external publication and available on the next CRL download.", "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("authority_detail", authority_id=record_id) if table == "authorities" else url_for("index"))
 
     @app.post("/certificates/<int:certificate_id>/revoke")

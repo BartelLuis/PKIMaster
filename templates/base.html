@@ -10,6 +10,10 @@
 {% elif name == 'logout' %}<path d="M9 3H4v18h5M9 12h12m-4-4 4 4-4 4"/>
 {% elif name == 'menu' %}<path d="M4 6h16M4 12h16M4 18h16"/>
 {% elif name == 'lock' %}<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>
+{% elif name == 'success' %}<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>
+{% elif name == 'error' %}<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>
+{% elif name == 'warning' %}<path d="m12 3 10 18H2Z"/><path d="M12 9v5m0 3v.01"/>
+{% elif name == 'info' %}<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/>
 {% endif %}</svg>
 {%- endmacro %}
 {% set authentication_page = request.endpoint in ['enterprise.login', 'enterprise.setup', 'mfa.enroll', 'mfa.challenge', 'identity.oidc_callback'] %}
@@ -65,7 +69,17 @@
     <div class="auth-shell">
     {% endif %}
       <main id="main-content" tabindex="-1">
-        {% with messages = get_flashed_messages() %}{% if messages %}<ul class="flash" role="status" aria-live="polite">{% for message in messages %}<li>{{ icon('shield') }}<span>{{ message }}</span></li>{% endfor %}</ul>{% endif %}{% endwith %}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <ul class="flash">
+          {% for category, message in messages %}
+          {% set category = category if category in ['success', 'error', 'warning', 'info'] else 'info' %}
+          {% set labels = {'success': 'Success', 'error': 'Error', 'warning': 'Warning', 'info': 'Information'} %}
+          <li class="flash-{{ category }}">{{ icon(category) }}<span role="{{ 'alert' if category in ['error', 'warning'] else 'status' }}"><strong>{{ labels[category] }}:</strong> {{ message }}</span></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% endwith %}
         {% block content %}{% endblock %}
       </main>
       <footer class="page-footer"><span>PKIMaster</span><span>Certificate authority management</span></footer>

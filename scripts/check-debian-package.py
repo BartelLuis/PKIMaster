@@ -36,6 +36,8 @@ def main() -> None:
         print(f"{name}: {metadata[name]}")
     require("python3-paramiko (>= 3.5)" in metadata.get("Depends", ""),
             "Package must declare the supported Paramiko runtime dependency.")
+    require("python3-segno (>= 1.6.6)" in metadata.get("Depends", ""),
+            "Package must declare the Segno dependency for local MFA QR generation.")
 
     archive_bytes = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
     with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as archive:

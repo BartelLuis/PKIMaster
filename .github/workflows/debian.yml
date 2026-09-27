@@ -42,7 +42,7 @@ jobs:
           apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update 2>&1 | tee dist/debian-dependencies.log
           apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
             build-essential debhelper python3 python3-flask python3-cryptography \
-            python3-werkzeug python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko \
+            python3-werkzeug python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno \
             python3-pykcs11 softhsm2 gunicorn curl systemd 2>&1 | tee -a dist/debian-dependencies.log
 
       - name: Build with Debian dependencies and run unit tests

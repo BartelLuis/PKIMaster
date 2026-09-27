@@ -244,7 +244,7 @@ def settings():
     if request.method == "POST":
         with publication_lock() as acquired:
             if not acquired:
-                flash("A publication is running. Wait for it to finish before changing its target.")
+                flash("A publication is running. Wait for it to finish before changing its target.", "warning")
                 return redirect(url_for("publication.settings"))
             try:
                 db.execute("BEGIN IMMEDIATE")
@@ -255,11 +255,11 @@ def settings():
                 public["credentials_replaced"] = any(request.form.get(field) for field in SECRET_FIELDS)
                 _audit("publication.configured", detail=json.dumps(public, sort_keys=True))
                 db.commit()
-                flash("Publication settings saved. The APT service checks pending work every minute. URL changes apply to newly issued certificates.")
+                flash("Publication settings saved. The APT service checks pending work every minute. URL changes apply to newly issued certificates.", "success")
                 return redirect(url_for("publication.settings"))
             except ValueError as exc:
                 db.rollback()
-                flash(str(exc))
+                flash(str(exc), "error")
                 status = 400
     config = configuration()
     state = dict(db.execute("SELECT * FROM publication_state WHERE id=1").fetchone())
@@ -283,7 +283,8 @@ def publish_now():
     messages = {"published": "Public CA artifacts published successfully.", "failed": "Publication failed. The pending job will be retried; see the status below.",
                 "busy": "Another publication is running. Your request remains queued.", "disabled": "Enable SFTP publication first.",
                 "waiting": "Publication is waiting for an active CA or the next retry.", "idle": "The current artifacts are already published."}
-    flash(messages[result["status"]])
+    categories = {"published": "success", "failed": "error", "busy": "info", "disabled": "warning", "waiting": "info", "idle": "info"}
+    flash(messages[result["status"]], categories[result["status"]])
     return redirect(url_for("publication.settings"))
 
 
