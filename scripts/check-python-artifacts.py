@@ -27,7 +27,8 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-APPLICATION_MODULES = {"app", "enterprise", "identity", "mfa", "pki", "key_backends", "key_storage", "audit_integrity", "security", "pkimaster_server", "wsgi"}
+APPLICATION_MODULES = {"app", "enterprise", "identity", "mfa", "pki", "key_backends", "key_storage", "audit_integrity", "security", "publication", "publication_transports", "publication_worker", "pkimaster_server", "wsgi"}
+PUBLICATION_SOURCE_FILES = {"docs/PUBLICATION.md", "debian/pkimaster-publication.service", "debian/pkimaster-publication.timer"}
 
 
 def require(condition: bool, message: str) -> None:
@@ -60,6 +61,7 @@ def check_archives(wheel: Path, sdist: Path, configuration: dict) -> tuple[list[
     template_paths = sorted((ROOT / "templates").rglob("*.html"))
     require(bool(template_paths), "No source templates found.")
     templates = [path.relative_to(ROOT / "templates").as_posix() for path in template_paths]
+    require("publication.html" in templates, "The publication configuration template is missing.")
     module_files = {module.replace(".", "/") + ".py" for module in modules}
     expected_files = module_files | {"templates/" + name for name in templates}
     expected_files |= {path.relative_to(ROOT).as_posix() for path in (ROOT / "static").rglob("*") if path.is_file()}
@@ -87,7 +89,7 @@ def check_archives(wheel: Path, sdist: Path, configuration: dict) -> tuple[list[
         require(metadata_file is not None, f"{sdist.name}: missing top-level PKG-INFO.")
         with archive.extractfile(metadata_file) as source:
             check_metadata(source.read(), configuration["project"], sdist.name)
-        for source_name in sorted(expected_files | {"pyproject.toml", "MANIFEST.in", "README.md", "scripts/check-python-artifacts.py"}):
+        for source_name in sorted(expected_files | PUBLICATION_SOURCE_FILES | {"pyproject.toml", "MANIFEST.in", "README.md", "scripts/check-python-artifacts.py"}):
             member = files.get(prefix + source_name)
             require(member is not None, f"{sdist.name}: missing {source_name}.")
             with archive.extractfile(member) as source:

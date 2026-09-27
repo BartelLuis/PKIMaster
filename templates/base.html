@@ -42,6 +42,7 @@
         {{ nav_item('enterprise.users', 'Users & access', 'users') }}
         {% if has_endpoint is defined and has_endpoint('identity.settings') %}{{ nav_item('identity.settings', 'Identity providers', 'identity') }}{% endif %}
         {% if has_endpoint is defined and has_endpoint('key_storage.settings') %}{{ nav_item('key_storage.settings', 'Key storage', 'key') }}{% endif %}
+        {% if has_endpoint is defined and has_endpoint('publication.settings') %}{{ nav_item('publication.settings', 'CRL & AIA publication', 'audit') }}{% endif %}
         {{ nav_item('enterprise.settings', 'Settings', 'settings') }}
         {% endif %}
       </nav>

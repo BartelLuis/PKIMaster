@@ -19,7 +19,7 @@ from flask import Flask, Response, current_app, flash, g, redirect, render_templ
 from werkzeug.utils import secure_filename
 
 from enterprise import audit_event, can_manage, configure_runtime, get_setting, init_enterprise
-from pki import (REVOCATION_REASONS, build_crl, create_ca_certificate, create_ca_request,
+from pki import (REVOCATION_REASONS, create_ca_certificate, create_ca_request,
                  issue_end_entity_certificate, sign_ca_request, validate_ca_activation, valid_parent_child_roles, crl_signature_is_valid)
 
 
@@ -125,8 +125,13 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
 
 
 def crl_distribution_url(authority_id: int) -> str | None:
-    base = get_setting("public_base_url", "").rstrip("/")
-    return f"{base}/crl/{authority_id}.crl" if base else None
+    from publication import public_url
+    return public_url("crl", authority_id)
+
+
+def issuer_certificate_url(authority_id: int) -> str | None:
+    from publication import public_url
+    return public_url("aia", authority_id)
 
 
 def create_app(test_config: dict | None = None) -> Flask:
@@ -158,6 +163,8 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.register_blueprint(security)
     from key_storage import init_key_storage, authority_signing_key, provision_authority_key
     init_key_storage(app)
+    from publication import init_publication, ensure_crl, queue_publication
+    init_publication(app)
 
     @app.before_request
     def protect_audit_integrity():
@@ -241,6 +248,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (name, role, common_name, pem, encrypt_private_key(key) if key else "", serial, start, end, csr, state, backend, reference))
             audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
+            queue_publication(db)
             db.commit()
             flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.")
         except sqlite3.IntegrityError:
@@ -271,6 +279,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                        (cert.public_bytes(serialization.Encoding.PEM).decode(), chain, format(cert.serial_number, "x"),
                         cert.not_valid_before_utc.isoformat(), cert.not_valid_after_utc.isoformat(), authority["id"]))
             audit_event("authority.activated", "authority", str(authority["id"]), cert.fingerprint(hashes.SHA256()).hex())
+            queue_publication(db)
             db.commit()
             flash("CA certificate imported. Import current parent CRLs to enable signing.")
         except ValueError as error:
@@ -367,7 +376,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError(authority_block_reason(authority))
             pem, serial, start, end = sign_ca_request(pending["csr_pem"], pending["role"], pending["validity_days"],
                 authority["role"], authority["certificate_pem"], authority_signing_key(authority),
-                crl_url=crl_distribution_url(authority["id"]))
+                crl_url=crl_distribution_url(authority["id"]), aia_url=issuer_certificate_url(authority["id"]))
             result = db.execute("INSERT INTO issued_authorities (authority_id, common_name, role, certificate_pem, serial_number, not_before, not_after) VALUES (?,?,?,?,?,?,?)",
                 (authority["id"], pending["common_name"], pending["role"], pem, serial, start, end))
             db.execute("UPDATE ca_requests SET status='approved', reviewed_by=?, reviewed_at=?, issued_id=? WHERE id=?",
@@ -418,7 +427,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 common_name=common_name, issuer_certificate_pem=authority["certificate_pem"],
                 issuer_private_key_pem=authority_signing_key(authority), validity_days=days,
                 subject_alt_names=request.form.get("subject_alt_names", ""), profile=profile,
-                csr_pem=request.form.get("csr_pem", "").strip() or None, crl_url=crl_distribution_url(authority["id"]), minimum_rsa_bits=3072)
+                csr_pem=request.form.get("csr_pem", "").strip() or None, crl_url=crl_distribution_url(authority["id"]),
+                aia_url=issuer_certificate_url(authority["id"]), minimum_rsa_bits=3072)
             certificate = x509.load_pem_x509_certificate(pem.encode())
             try:
                 sans = ", ".join(str(item.value) for item in certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value)
@@ -456,11 +466,12 @@ def create_app(test_config: dict | None = None) -> Flask:
             db.execute("UPDATE crls SET next_update = NULL WHERE authority_id = ?", (issuer_id,))
             kind = {"authorities": "authority", "certificates": "certificate", "issued_authorities": "subordinate"}[table]
             audit_event(f"{kind}.revoked", kind, str(record_id), reason)
+            queue_publication(db)
             db.commit()
             if table == "authorities" and issuer_id is None:
                 flash("Local CA disabled. For a subordinate CA, request revocation on its parent server and distribute its updated CRL. For a root, remove trust on relying parties.")
             else:
-                flash("Certificate revoked. Its issuer's CRL will include the revocation on the next download.")
+                flash("Certificate revoked. The updated CRL is queued for configured external publication and available on the next CRL download.")
         except ValueError as error:
             db.rollback()
             flash(str(error))
@@ -500,22 +511,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             return Response("The local CA is awaiting activation.", status=409)
         db.execute("BEGIN IMMEDIATE")
         try:
-            cached = db.execute("SELECT * FROM crls WHERE authority_id = ?", (authority_id,)).fetchone()
-            if cached and cached["next_update"] and datetime.fromisoformat(cached["next_update"]) > utc_now():
-                der = cached["der"]
-            else:
-                revoked = db.execute("""SELECT serial_number, revoked_at, revocation_reason FROM certificates
-                    WHERE authority_id = ? AND revoked_at IS NOT NULL UNION ALL
-                    SELECT serial_number, revoked_at, revocation_reason FROM issued_authorities
-                    WHERE authority_id = ? AND revoked_at IS NOT NULL""", (authority_id, authority_id)).fetchall()
-                number = (cached["number"] if cached else 0) + 1
-                der = build_crl(authority["certificate_pem"], authority_signing_key(authority),
-                                [dict(row) for row in revoked], number, int(get_setting("crl_days", 7)))
-                next_update = x509.load_der_x509_crl(der).next_update_utc.isoformat()
-                db.execute("""INSERT INTO crls(authority_id, number, der, next_update) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(authority_id) DO UPDATE SET number=excluded.number, der=excluded.der, next_update=excluded.next_update""",
-                    (authority_id, number, der, next_update))
-                audit_event("crl.published", "authority", str(authority_id), f"number={number}; entries={len(revoked)}")
+            der = ensure_crl(db, authority)
             db.commit()
         except ValueError as error:
             db.rollback()

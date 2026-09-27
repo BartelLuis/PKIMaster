@@ -1,0 +1,36 @@
+[Unit]
+Description=PKIMaster external certificate and CRL publication
+Wants=network-online.target
+After=network-online.target pkimaster.service
+ConditionPathExists=/var/lib/pkimaster/pkimaster.sqlite
+
+[Service]
+Type=oneshot
+User=_pkimaster
+Group=_pkimaster
+WorkingDirectory=/usr/lib/pkimaster
+ExecStart=/usr/bin/python3 /usr/lib/pkimaster/publication_worker.py
+TimeoutStartSec=90
+TimeoutStopSec=15
+StateDirectory=pkimaster
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/pkimaster
+Environment=PYTHONDONTWRITEBYTECODE=1

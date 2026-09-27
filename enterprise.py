@@ -138,7 +138,7 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                         for row in connection.execute(f"SELECT {column} FROM users WHERE {column} IS NOT NULL"):
                             cipher.decrypt(row[0].encode("utf-8"))
             if "settings" in tables:
-                for row in connection.execute("SELECT value FROM settings WHERE key = 'key_storage_config'"):
+                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config')"):
                     cipher.decrypt(row[0].encode("utf-8"))
             if "identity_settings" in tables:
                 for row in connection.execute("SELECT payload FROM identity_settings"):
@@ -395,7 +395,7 @@ def init_enterprise(app) -> None:
         endpoint = request.endpoint
         if endpoint is None:
             return None
-        if endpoint in {"healthz", "static", "download_crl"} and request.method in {"GET", "HEAD", "OPTIONS"}:
+        if endpoint in {"healthz", "static", "download_crl", "publication.aia"} and request.method in {"GET", "HEAD", "OPTIONS"}:
             return None
         installed = _db().execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
         if not installed:
@@ -435,7 +435,7 @@ def init_enterprise(app) -> None:
             return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
         admin_endpoints = {"create_authority", "revoke_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
                            "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
-                           "identity.settings", "key_storage.settings", "security.policy"}
+                           "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now"}
         operator_endpoints = {"create_certificate", "revoke_certificate"}
         if endpoint in admin_endpoints and not can_manage("admin"):
             abort(403)
@@ -460,7 +460,7 @@ def init_enterprise(app) -> None:
             if origin:
                 form_action += " " + origin
         response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; form-action " + form_action + "; frame-ancestors 'none'; base-uri 'self'")
-        if request.endpoint not in {"static", "download_crl"}:
+        if request.endpoint not in {"static", "download_crl", "publication.aia"}:
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -538,6 +538,8 @@ def settings():
             _write_settings(values)
             if previous_crl_days != values["crl_days"]:
                 _db().execute("UPDATE crls SET next_update = NULL")
+                from publication import queue_publication
+                queue_publication(_db())
             audit_event("settings.updated", "settings", "", json.dumps(values, sort_keys=True))
             if tls_pem:
                 _install_tls(tls_pem)

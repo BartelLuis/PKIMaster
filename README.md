@@ -26,7 +26,7 @@ Use the [browser workflow and migration instructions](docs/BSI-READINESS.md#brow
 
 ## Screenshots
 
-Captured from the current web console on **2026-09-26**, using fictional demo data and one local Issuing CA. The Root runs separately; only its public chain and signed CRL are imported. The key-storage screenshot shows initial provider setup before a CA is created. Image filenames include a content fingerprint so updated captures use new URLs.
+Captured from the current web console on **2026-09-26**, using fictional demo data and one local Issuing CA. The Root runs separately; only its public chain and signed CRL are imported. The key-storage screenshot shows initial provider setup before a CA is created. The publication screenshot shows saved example settings with automatic uploads disabled and credentials hidden. Image filenames include a content fingerprint so updated captures use new URLs.
 
 ![Certificate inventory with exactly one local CA and five demo certificates](docs/screenshots/certificate-inventory-b8525cbbb0db.png)
 
@@ -35,32 +35,39 @@ Captured from the current web console on **2026-09-26**, using fictional demo da
 
 Issue certificates through the server's single CA, using certificate requests, certificate profiles and bounded validity.
 
-![Certificate issuance through the local Issuing CA](docs/screenshots/certificate-issuance-6b5e9f9e10d8.png)
+![Certificate issuance through the local Issuing CA](docs/screenshots/certificate-issuance-770085c922df.png)
 
 </details>
 
 <details>
 <summary>Web-only configuration</summary>
 
-![Web configuration for organization, PKI policy and HTTPS service](docs/screenshots/web-configuration-c97e55e4e69c.png)
+![Web configuration for organization, PKI policy and HTTPS service](docs/screenshots/web-configuration-ebe6465ddec9.png)
+
+</details>
+
+<details>
+<summary>CRL and AIA publication</summary>
+
+![Publication status, public CRL and issuer-certificate URLs, and saved SFTP configuration with credentials hidden](docs/screenshots/crl-aia-publication-cf5d0caa9304.png)
 
 </details>
 
 <details>
 <summary>Audit log</summary>
 
-![Audit history including MFA, CA activation, parent CRL import and certificate lifecycle events](docs/screenshots/audit-log-79fb00d5f038.png)
+![Audit history including MFA, CA activation, parent CRL import and certificate lifecycle events](docs/screenshots/audit-log-c5303c06637e.png)
 
 </details>
 
 <details>
 <summary>Identity providers, key storage and security posture</summary>
 
-![Local, LDAP and OpenID Connect configuration](docs/screenshots/identity-providers-f41ea783ee23.png)
+![Local, LDAP and OpenID Connect configuration](docs/screenshots/identity-providers-b4b5f3d56b5b.png)
 
-![Initial PKCS#11 and Azure configuration, including SoftHSM token initialization](docs/screenshots/key-storage-ee380ae6a2ad.png)
+![Initial PKCS#11 and Azure configuration, including SoftHSM token initialization](docs/screenshots/key-storage-b5a278926245.png)
 
-![CA security posture and verified audit evidence](docs/screenshots/security-posture-c169ce156d5a.png)
+![CA security posture and verified audit evidence](docs/screenshots/security-posture-446b29f8dae2.png)
 
 </details>
 
@@ -70,7 +77,7 @@ Build the package on Debian 13 (the build runs the application tests):
 
 ```sh
 sudo apt update
-sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-pykcs11 softhsm2
+sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
 sudo apt install ./dist/pkimaster_0.2.0-1_all.deb
 ```
@@ -97,7 +104,11 @@ Use **Key storage** before initializing the CA to choose encrypted software keys
 
 The listener initially binds to loopback. To enable remote access, upload a trusted server certificate and matching unencrypted PEM key, then choose the server's IP address or `0.0.0.0`/`::` and an unprivileged port (1024–65535). The packaged service applies listener and TLS changes automatically within a few seconds; reconnect at the saved address and port. Firewall and DNS administration remain part of the host/network deployment.
 
-Set the public base URL before issuing certificates if relying parties should discover the CRL endpoint automatically. Newly issued subordinate and end-entity certificates include the corresponding CRL distribution point. Changing the URL does not rewrite certificates already issued. The publication path is `/crl/<authority-id>.crl` and is accessible without login; the rest of the inventory requires authentication.
+Use **CRL & AIA publication** to configure public CRL and issuer-certificate URLs and an optional **SFTP destination**. PKIMaster pushes `ca.crl` (DER), `ca.cer` (DER) and `chain.pem` into a dedicated remote directory. The destination web server serves these public files over HTTP(S); SFTP is the upload transport. Pin the SSH host key and use a dedicated password or SSH key, stored encrypted through the browser. No CA private keys leave the signing provider. See the [SFTP setup and operating guide](docs/PUBLICATION.md).
+
+New subordinate and end-entity certificates embed the configured CRL distribution point and CA Issuers AIA URL. Without overrides, the public base URL supplies `/crl/<authority-id>.crl` and `/aia/<authority-id>.cer`, both accessible without login. AIA returns the signing issuer's certificate. Changing URLs affects future certificates only; keep older locations available for existing certificates.
+
+The APT package includes a publication timer that checks every minute. Revocations queue an updated CRL, and enabled publication renews CRLs before expiry even without browser traffic. Uploads use temporary files and atomic replacement, with the CRL replaced last. Failed uploads remain queued with bounded retry delays and visible status; revocation remains committed locally. Automatic publication requires the CA host and signing provider to be online. Offline Roots need scheduled ceremonies before CRL expiry.
 
 ## Certificate management
 
@@ -109,7 +120,7 @@ Set the public base URL before issuing certificates if relying parties should di
 - Disabling the local CA stops its signing. Revoke a subordinate on its parent server and distribute the new CRL. Remove a distrusted root from relying-party trust stores. Disconnected servers learn parent revocation only when updated CRLs are imported.
 - Certificate and chain downloads, searchable paginated inventory, and expiry counts. Generated end-entity key exports are disabled by default, restricted to administrators when enabled, and audited. CA key exports are always forbidden.
 
-Revocation is permanent in this version, including the `certificate_hold` reason. Relying parties must be configured to check CRLs; publication alone does not make clients enforce revocation. CRLs are refreshed on request and cannot be signed by expired CAs.
+Revocation is permanent in this version, including the `certificate_hold` reason. Relying parties must be configured to check CRLs; publication alone does not make clients enforce revocation. CRLs are refreshed on request and by the enabled SFTP publication timer, and cannot be signed by expired CAs. Publication status confirms the SFTP transfer; monitor HTTP(S) retrieval and CRL freshness independently.
 
 ## Administration and security
 
@@ -130,14 +141,17 @@ Audit records cover setup, authentication, users, policy changes, issuance, revo
 ```sh
 sudo systemctl status pkimaster
 sudo journalctl -u pkimaster
+sudo systemctl status pkimaster-publication.timer
+sudo journalctl -u pkimaster-publication.service
 ```
 
-State lives in `/var/lib/pkimaster`, including the SQLite database, `runtime-secrets.json`, `server-tls/` and optional `softhsm/` tokens. Back up the complete directory together; the database alone cannot recover encrypted keys, provider credentials or MFA secrets. External HSM/Azure keys require the provider's separate backup, retention and recovery procedures. Stop the service for a consistent file-level backup and protect backups as CA key material:
+State lives in `/var/lib/pkimaster`, including the SQLite database, `runtime-secrets.json`, `server-tls/` and optional `softhsm/` tokens. Back up the complete directory together; the database alone cannot recover encrypted keys, provider credentials or MFA secrets. External HSM/Azure keys require the provider's separate backup, retention and recovery procedures. Stop the publication timer, active worker and web service for a consistent file-level backup and protect backups as CA key material:
 
 ```sh
-sudo systemctl stop pkimaster
+sudo systemctl stop pkimaster-publication.timer
+sudo systemctl stop pkimaster-publication.service pkimaster
 sudo sh -c 'umask 077; tar -C /var/lib -czf /root/pkimaster-backup.tar.gz pkimaster'
-sudo systemctl start pkimaster
+sudo systemctl start pkimaster pkimaster-publication.timer
 ```
 
 Restore the complete directory with ownership `_pkimaster:_pkimaster`, directory mode `0700`, and private file modes before starting the service. Package removal and purge deliberately retain the state directory and its system user to avoid destroying CA keys.
@@ -178,4 +192,4 @@ Install local CI tooling with `python -m pip install -r requirements-ci.txt`. Th
 
 ## Current scope
 
-This is a developing private PKI with separate CA hosts. It is not BSI-certified or a complete implementation of TR-03145. [The readiness matrix](docs/BSI-READINESS.md) records implemented controls and blocking gaps, including HSM integration, comprehensive dual control, protected external audit retention, operational governance, recovery and independent assessment. SSO, ACME/SCEP/EST, OCSP, automated parent CRL synchronization, CA rollover and high availability are also not implemented.
+This is a developing private PKI with separate CA hosts. It is not BSI-certified or a complete implementation of TR-03145. [The readiness matrix](docs/BSI-READINESS.md) records implemented controls and blocking gaps, including qualification of HSM deployments, comprehensive dual control, protected external audit retention, operational governance, recovery and independent assessment. ACME/SCEP/EST, OCSP, automated parent CRL synchronization, CA rollover and high availability are also not implemented.

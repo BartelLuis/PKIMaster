@@ -13,7 +13,7 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
-from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID, SignatureAlgorithmOID
+from cryptography.x509.oid import AuthorityInformationAccessOID, ExtendedKeyUsageOID, ExtensionOID, NameOID, SignatureAlgorithmOID
 
 from key_backends import ExternalSigner, sign_builder
 
@@ -222,22 +222,46 @@ def _validity_window(now: datetime, validity_days: int, issuer: x509.Certificate
     return not_before, not_after
 
 
+def validate_publication_url(value: str, *, label: str = "Publication") -> str:
+    """Validate an HTTP(S) URI for public certificate/CRL discovery, without I/O."""
+    try:
+        if (not isinstance(value, str) or not value or not value.isascii()
+                or any(ord(char) <= 32 or ord(char) == 127 for char in value)
+                or "\\" in value or "#" in value or re.search(r"%(?![0-9a-fA-F]{2})", value)
+                or re.search(r"%(?:0[0-9a-f]|1[0-9a-f]|7f|5c)", value, flags=re.IGNORECASE)):
+            raise ValueError
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or "%" in parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.netloc.endswith(":") or (parsed.port is not None and not 1 <= parsed.port <= 65535)):
+            raise ValueError
+        try:
+            ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            if "*" in parsed.hostname or "%" in parsed.hostname:
+                raise ValueError from None
+            _dns_name(parsed.hostname)
+    except ValueError:
+        raise ValueError(f"{label} URL must be absolute ASCII HTTP or HTTPS with a valid host and port, without credentials, fragments, backslashes or control characters.") from None
+    return value
+
+
 def _add_crl_distribution_point(builder: x509.CertificateBuilder, crl_url: str | None):
     if crl_url is None:
         return builder
-    try:
-        parsed = urlsplit(crl_url)
-        valid = (
-            parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.fragment
-            and parsed.username is None and parsed.password is None and parsed.port != 0
-            and crl_url.isascii() and not any(char.isspace() or ord(char) < 32 for char in crl_url)
-        )
-    except ValueError:
-        valid = False
-    if not valid:
-        raise ValueError("CRL URL must be an absolute ASCII HTTP or HTTPS URL without credentials.")
+    validate_publication_url(crl_url, label="CRL")
     point = x509.DistributionPoint([x509.UniformResourceIdentifier(crl_url)], None, None, None)
     return builder.add_extension(x509.CRLDistributionPoints([point]), critical=False)
+
+
+def _add_authority_information_access(builder: x509.CertificateBuilder, aia_url: str | None):
+    if aia_url is None:
+        return builder
+    validate_publication_url(aia_url, label="Issuer certificate")
+    # RFC 5280 4.2.2.1: this location identifies the ISSUER's public certificate,
+    # not the new certificate or an OCSP service. The caller chooses its URL.
+    access = x509.AccessDescription(AuthorityInformationAccessOID.CA_ISSUERS, x509.UniformResourceIdentifier(aia_url))
+    return builder.add_extension(x509.AuthorityInformationAccess([access]), critical=False)
 
 
 def _certificate_result(certificate: x509.Certificate, private_key=None) -> tuple[str, str, str, str, str]:
@@ -260,6 +284,7 @@ def create_ca_certificate(
     *,
     crl_url: str | None = None,
     signer: ExternalSigner | None = None,
+    aia_url: str | None = None,
 ) -> tuple[str, str, str, str, str]:
     subject = build_subject(common_name)
     _validate_validity_days(validity_days)
@@ -298,6 +323,7 @@ def create_ca_certificate(
         .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
     )
     builder = _add_crl_distribution_point(builder, crl_url)
+    builder = _add_authority_information_access(builder, aia_url)
     certificate = sign_builder(builder, issuer_key or private_key)
     return _certificate_result(certificate, private_key)
 
@@ -424,6 +450,8 @@ def sign_ca_request(
     issuer_certificate_pem: str,
     issuer_private_key_pem: str,
     crl_url: str | None = None,
+    *,
+    aia_url: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Sign a remote CA's public request; its private key is never transferred.
 
@@ -470,7 +498,9 @@ def sign_ca_request(
             .add_extension(x509.BasicConstraints(True, min(requested.path_length, constraints.path_length - 1)), critical=True)
             .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
         )
-        certificate = sign_builder(_add_crl_distribution_point(builder, crl_url), issuer_key)
+        builder = _add_crl_distribution_point(builder, crl_url)
+        builder = _add_authority_information_access(builder, aia_url)
+        certificate = sign_builder(builder, issuer_key)
         result = _certificate_result(certificate)
         return result[0], result[2], result[3], result[4]
     except (InvalidSignature, UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType,
@@ -580,6 +610,7 @@ def issue_end_entity_certificate(
     csr_pem: str | None = None,
     crl_url: str | None = None,
     minimum_rsa_bits: int = 2048,
+    aia_url: str | None = None,
 ) -> tuple[str, str, str, str, str]:
     """Issue under a fixed EKU profile; explicit SANs replace requested CSR SANs.
 
@@ -630,6 +661,7 @@ def issue_end_entity_certificate(
     if names:
         builder = builder.add_extension(x509.SubjectAlternativeName(names), critical=False)
     builder = _add_crl_distribution_point(builder, crl_url)
+    builder = _add_authority_information_access(builder, aia_url)
     return _certificate_result(sign_builder(builder, issuer_key), private_key)
 
 

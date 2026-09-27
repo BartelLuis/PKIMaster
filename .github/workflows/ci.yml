@@ -47,7 +47,7 @@ jobs:
       - name: Install application and CI dependencies
         run: python -m pip install . -r requirements-ci.txt
       - name: Run the complete test suite with coverage
-        run: python -m coverage run --source=app,enterprise,identity,mfa,pki,key_backends,key_storage,audit_integrity,security,pkimaster_server -m unittest discover -s tests -v
+        run: python -m coverage run --source=app,enterprise,identity,mfa,pki,key_backends,key_storage,audit_integrity,security,publication,publication_transports,publication_worker,pkimaster_server -m unittest discover -s tests -v
       - name: Create coverage report
         if: ${{ !cancelled() }}
         run: python -m coverage xml -o coverage.xml

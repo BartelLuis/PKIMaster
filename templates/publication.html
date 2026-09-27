@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card"><p class="eyebrow">Public trust information</p><h2>CRL &amp; AIA publication</h2>
+<p class="muted">Publish this server's signed revocation list and public CA certificates to a separate distribution server. Clients retrieve them over HTTP(S); PKIMaster uploads them over SFTP.</p>
+<div class="grid">
+<div class="stat"><span>Automatic publication</span><strong>{{ 'Enabled' if provider.enabled else 'Disabled' }}</strong></div>
+<div class="stat"><span>Published CRL</span><strong>{{ state.last_published_crl_number or 'Not yet' }}</strong></div>
+<div class="stat"><span>Queue</span><strong>{{ 'Pending' if state.generation > state.published_generation else 'Current' }}</strong></div>
+</div>
+{% if state.last_error %}<p class="notice danger">{{ state.last_error }}</p>{% endif %}
+<dl><dt>Last successful upload</dt><dd>{{ state.last_success or 'No successful publication yet' }}</dd>
+<dt>Current CRL expires</dt><dd>{{ cached.next_update if cached and cached.next_update else 'A fresh CRL will be generated before publication' }}</dd>
+{% if state.next_attempt %}<dt>Retry after</dt><dd>{{ state.next_attempt }} ({{ state.failures }} consecutive failures)</dd>{% endif %}</dl>
+<form method="post" action="{{ url_for('publication.publish_now') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" {% if not provider.enabled %}disabled{% endif %}>Publish now / retry</button></form>
+</section>
+<section class="card"><h2>Distribution settings</h2>
+<form method="post" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<fieldset><legend>Public retrieval URLs</legend><div class="form-grid">
+<label>CRL distribution point<input type="url" name="crl_url" value="{{ provider.crl_url }}" placeholder="https://pki.example.net/issuing/ca.crl"></label>
+<label>AIA issuer certificate<input type="url" name="aia_url" value="{{ provider.aia_url }}" placeholder="https://pki.example.net/issuing/ca.cer"></label>
+</div><p class="muted">These addresses are embedded in newly issued certificates, including subordinate CA certificates. Existing certificates keep their original addresses. Keep those locations available. Leave blank to use the public base URL from Settings.</p>
+<p class="muted">The AIA address must return this CA's DER certificate. It does not provide OCSP. Configure the distribution web server to serve ca.crl as application/pkix-crl and ca.cer as application/pkix-cert, without login.</p></fieldset>
+<fieldset><legend>SFTP destination</legend>
+<label class="check"><input type="checkbox" name="enabled" {% if provider.enabled %}checked{% endif %}> Enable automatic SFTP publication</label>
+<p class="muted">When disabled, saving updates only the public URLs and keeps the stored SFTP connection settings.</p>
+<div class="form-grid">
+<label>Host<input name="host" value="{{ provider.host or '' }}" placeholder="distribution.example.net" autocomplete="off"></label>
+<label>Port<input type="number" name="port" value="{{ provider.port }}" min="1" max="65535"></label>
+<label>Remote directory<input name="directory" value="{{ provider.directory or '' }}" placeholder="/srv/www/pki/issuing"></label>
+<label>Username<input name="username" value="{{ provider.username or '' }}" autocomplete="off"></label>
+</div>
+<label>SSH host key fingerprint<input name="host_key_sha256" value="{{ provider.host_key_sha256 or '' }}" placeholder="SHA256:..." autocomplete="off"></label>
+<p class="muted">Obtain the fingerprint through a trusted channel. Unknown or changed host keys are rejected before authentication. Use a dedicated SFTP account restricted to this CA's directory.</p>
+<div class="form-grid"><label>Authentication<select name="auth_method"><option value="key" {% if provider.auth_method == 'key' %}selected{% endif %}>SSH private key</option><option value="password" {% if provider.auth_method == 'password' %}selected{% endif %}>Password</option></select></label>
+<label>Account password<input type="password" name="password" autocomplete="new-password" placeholder="{{ 'Stored; leave blank to keep' if has_password else 'SFTP password' }}"></label></div>
+<label>SSH private key (PEM or OpenSSH)<textarea name="private_key_pem" rows="4" autocomplete="off" spellcheck="false" placeholder="{{ 'Stored; leave blank to keep' if has_key else 'Paste the dedicated SFTP key' }}"></textarea></label>
+<label>SSH key passphrase<input type="password" name="private_key_passphrase" autocomplete="new-password" placeholder="Leave blank to keep the stored passphrase"></label>
+<p class="muted">Credentials are stored encrypted and never displayed. Re-enter credentials when changing the host, account or host key. This SSH key is separate from the CA signing key.</p>
+</fieldset>
+<p class="notice">The destination directory must already exist and support atomic POSIX rename. Uploads replace ca.cer, chain.pem and finally ca.crl. The APT timer runs every minute, renews CRLs before expiry and retries failures with a delay of up to one hour. No CA private keys are uploaded.</p>
+<button type="submit">Save publication settings</button>
+</form></section>
+{% endblock %}

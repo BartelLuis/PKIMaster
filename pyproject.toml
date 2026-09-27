@@ -17,6 +17,7 @@ dependencies = [
   "ldap3>=2.9.1,<3",
   "requests>=2.32,<3",
   "asn1crypto>=1.5.1,<2",
+  "Paramiko>=3.5,<5",
   "gunicorn>=23,<27; platform_system != 'Windows'",
 ]
 
@@ -27,7 +28,7 @@ pkcs11 = ["PyKCS11>=1.5.17,<2"]
 pkimaster-dev = "app:main"
 
 [tool.setuptools]
-py-modules = ["app", "enterprise", "identity", "mfa", "pki", "key_backends", "key_storage", "audit_integrity", "security", "pkimaster_server", "wsgi"]
+py-modules = ["app", "enterprise", "identity", "mfa", "pki", "key_backends", "key_storage", "audit_integrity", "security", "publication", "publication_transports", "publication_worker", "pkimaster_server", "wsgi"]
 
 [tool.setuptools.data-files]
 "share/pkimaster/templates" = ["templates/*.html"]
