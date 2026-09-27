@@ -73,7 +73,16 @@ Issue certificates through the server's single CA, using certificate requests, c
 
 ## Install with APT
 
-Build the package on Debian 13 (the build runs the application tests):
+Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.0-1**, download [`pkimaster_0.2.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.0-1/pkimaster_0.2.0-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
+
+```sh
+sudo apt update
+sudo apt install ./pkimaster_0.2.0-1_all.deb
+```
+
+Release assets also include `SHA256SUMS` and build metadata.
+
+To build from source, run the following from a checkout on Debian 13 (the build runs the application tests):
 
 ```sh
 sudo apt update
