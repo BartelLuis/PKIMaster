@@ -86,7 +86,9 @@ class BackupWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        # Windows runners may expose TEMP through an 8.3 alias. Match the
+        # canonical state paths used by the recovery installer and its journal.
+        self.root = Path(self.directory.name).resolve()
         self.app = create_app({"TESTING": True, "INSTANCE_PATH": str(self.root)})
         self.client = self.app.test_client()
         response = self.post(self.client, "/setup", {"username": "admin", "password": self.password,
@@ -125,7 +127,7 @@ class BackupWorkflowTests(unittest.TestCase):
     def fresh(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        root = Path(directory.name)
+        root = Path(directory.name).resolve()
         app = create_app({"TESTING": True, "INSTANCE_PATH": str(root)})
         return root, app, app.test_client()
 
