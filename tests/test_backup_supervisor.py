@@ -125,17 +125,22 @@ class AutomaticHttpsRecoveryTests(unittest.TestCase):
                         pass
 
         self.addCleanup(stop)
-        context = ssl.create_default_context()
-        for bundle in (source_tls, destination_tls):
+        def trusted_context(bundle):
             certificate = x509.load_pem_x509_certificate(bundle)
-            context.load_verify_locations(cadata=certificate.public_bytes(serialization.Encoding.PEM).decode())
+            return ssl.create_default_context(cadata=certificate.public_bytes(serialization.Encoding.PEM).decode())
+
+        # Both generated identities have the same subject. Older OpenSSL path
+        # builders can select the wrong key when both are loaded as trust anchors.
+        # Trust only the identity expected at each stage, keeping TLS verification.
+        context = trusted_context(destination_tls)
         cookies = CookieJar()
         opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), HTTPCookieProcessor(cookies))
         base = f"https://127.0.0.1:{port}"
         deadline = time.monotonic() + 25
 
-        def request(path, *, data=None, headers=None, http_client=opener):
-            with http_client.open(Request(base + path, data=data, headers=headers or {}), timeout=2) as received:
+        def request(path, *, data=None, headers=None, http_client=None):
+            client = http_client or opener
+            with client.open(Request(base + path, data=data, headers=headers or {}), timeout=2) as received:
                 return received.status, received.read(), urlsplit(received.url).path
 
         def wait_for(path, expected_path):
@@ -164,6 +169,8 @@ class AutomaticHttpsRecoveryTests(unittest.TestCase):
                       encrypted, f"\r\n--{boundary}--\r\n".encode()])
         status, _, _ = request("/restore", data=b"".join(parts), headers={"Content-Type": "multipart/form-data; boundary=" + boundary})
         self.assertEqual(status, 202)
+        context = trusted_context(source_tls)
+        opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), HTTPCookieProcessor(cookies))
         _, login_page, _ = wait_for("/login", "/login")
         self.assertFalse(restore_pending(destination))
         self.assertNotEqual(pid_file.read_text().splitlines()[-1], first_child, "Recovery must restart the HTTPS child")
