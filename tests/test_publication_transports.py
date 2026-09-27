@@ -13,10 +13,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import paramiko
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 
-from publication_transports import PublicationError, _private_key, publish, validate_transport
+from publication_transports import PublicationError, _StrictHostSignatureTransport, _private_key, publish, validate_transport
 
 
 ARTIFACTS = [{"name": "ca.crl", "content": b"new signed CRL", "content_type": "application/pkix-crl"},
@@ -26,6 +26,23 @@ ARTIFACTS = [{"name": "ca.crl", "content": b"new signed CRL", "content_type": "a
 
 def fingerprint(key):
     return "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+
+
+class MismatchedRSAHostKey(paramiko.RSAKey):
+    """Malicious server emits a valid signature with an unnegotiated algorithm."""
+
+    def __init__(self, private, signature_algorithm):
+        super().__init__(key=private)
+        self.private, self.signature_algorithm = private, signature_algorithm
+
+    def sign_ssh_data(self, data, algorithm=None):
+        # Construct the wire signature ourselves: Paramiko 5 no longer signs
+        # SHA-1, but a hostile peer is not constrained by its implementation.
+        digest = {"ssh-rsa": hashes.SHA1, "rsa-sha2-256": hashes.SHA256, "rsa-sha2-512": hashes.SHA512}[self.signature_algorithm]()
+        signature = paramiko.Message()
+        signature.add_string(self.signature_algorithm)
+        signature.add_string(self.private.sign(data, padding.PKCS1v15(), digest))
+        return signature
 
 
 class Authentication(paramiko.ServerInterface):
@@ -124,6 +141,7 @@ class LocalSFTP:
         self.root = Path(root).resolve()
         (self.root / "public").mkdir()
         self.host_key, self.user_key = host_key, None
+        self.host_key_algorithms = None
         self.atomic_replace, self.interrupt_write, self.reject_crl_promotion = True, False, False
         self.auth_wait = 0
         self.auth_attempts, self.removed, self.promotions, self.transports = [], [], [], []
@@ -145,6 +163,8 @@ class LocalSFTP:
             except OSError:
                 return
             transport = paramiko.Transport(connection)
+            if self.host_key_algorithms:
+                transport.get_security_options().key_types = self.host_key_algorithms
             self.transports.append(transport)
             transport.add_server_key(self.host_key)
             transport.set_subsystem_handler("sftp", paramiko.SFTPServer, Filesystem, fixture=self)
@@ -168,7 +188,8 @@ class LocalSFTP:
 class TransportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.host_key = paramiko.RSAKey(key=rsa.generate_private_key(public_exponent=65537, key_size=3072))
+        cls.host_private = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        cls.host_key = paramiko.RSAKey(key=cls.host_private)
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -193,6 +214,49 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(self.server.promotions, ["chain.pem", "ca.cer", "ca.crl"])
         self.assertEqual(self.server.auth_attempts, ["password"])
         self.assertTrue(all(Path(path).name.startswith(".pkimaster-") for path in self.server.removed))
+        self.assert_no_temporary_files()
+
+    def test_valid_rsa_sha256_and_sha512_host_signatures_publish(self):
+        for algorithm in ("rsa-sha2-256", "rsa-sha2-512"):
+            with self.subTest(algorithm=algorithm):
+                self.server.host_key_algorithms = (algorithm,)
+                publish(self.config, ARTIFACTS)
+                self.assertEqual(self.server.transports[-1].host_key_type, algorithm)
+                for artifact in ARTIFACTS:
+                    self.assertEqual((self.server.root / "public" / artifact["name"]).read_bytes(), artifact["content"])
+                self.assert_no_temporary_files()
+
+    def test_ed25519_and_nist_ecdsa_host_signatures_publish(self):
+        for private in (ed25519.Ed25519PrivateKey.generate(), ec.generate_private_key(ec.SECP384R1())):
+            pem = private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption()).decode()
+            self.server.host_key = _private_key(validate_transport(self.config | {"private_key_pem": pem}))
+            with self.subTest(algorithm=self.server.host_key.get_name()):
+                publish(self.config | {"host_key_sha256": fingerprint(self.server.host_key)}, ARTIFACTS)
+                self.assertEqual(self.server.transports[-1].host_key_type, self.server.host_key.get_name())
+                self.assertEqual((self.server.root / "public" / "ca.crl").read_bytes(), b"new signed CRL")
+                self.assert_no_temporary_files()
+
+    def test_sha1_host_signature_after_sha2_negotiation_rejected_before_authentication(self):
+        self.server.host_key = MismatchedRSAHostKey(self.host_private, "ssh-rsa")
+        for algorithm in ("rsa-sha2-256", "rsa-sha2-512"):
+            with self.subTest(algorithm=algorithm):
+                self.server.host_key_algorithms = (algorithm,)
+                with self.assertRaisesRegex(PublicationError, "SFTP publication failed"):
+                    publish(self.config, ARTIFACTS)
+                self.assertEqual(self.server.transports[-1].host_key_type, algorithm)
+                self.assertEqual(self.server.auth_attempts, [])
+                self.assert_old_files()
+                self.assert_no_temporary_files()
+
+    def test_different_sha2_host_signature_also_rejected_before_authentication(self):
+        self.server.host_key = MismatchedRSAHostKey(self.host_private, "rsa-sha2-512")
+        self.server.host_key_algorithms = ("rsa-sha2-256",)
+        with self.assertRaisesRegex(PublicationError, "SFTP publication failed"):
+            publish(self.config, ARTIFACTS)
+        self.assertEqual(self.server.transports[-1].host_key_type, "rsa-sha2-256")
+        self.assertEqual(self.server.auth_attempts, [])
+        self.assert_old_files()
         self.assert_no_temporary_files()
 
     def test_host_key_mismatch_stops_before_sending_authentication(self):
@@ -295,6 +359,9 @@ class TransportTests(unittest.TestCase):
         self.assertNotIn("DO-NOT-EXPOSE", str(error.exception))
         self.assertFalse(fake.connect.call_args.kwargs["allow_agent"])
         self.assertFalse(fake.connect.call_args.kwargs["look_for_keys"])
+        self.assertIs(fake.connect.call_args.kwargs["transport_factory"], _StrictHostSignatureTransport)
+        for category in ("keys", "pubkeys"):
+            self.assertIn("ssh-rsa", fake.connect.call_args.kwargs["disabled_algorithms"][category])
         for field in ("timeout", "banner_timeout", "auth_timeout", "channel_timeout"):
             self.assertGreater(fake.connect.call_args.kwargs[field], 0)
         fake.load_system_host_keys.assert_not_called()
@@ -309,6 +376,42 @@ class TransportTests(unittest.TestCase):
             self.assertTrue(_private_key(value).can_sign())
             with self.assertRaisesRegex(ValueError, "private key or passphrase is invalid"):
                 validate_transport(value | {"private_key_passphrase": "wrong secret"})
+
+
+class HostSignatureTests(unittest.TestCase):
+    def setUp(self):
+        local, peer = socket.socketpair()
+        self.addCleanup(local.close)  # An unstarted Transport.close() leaves its socket open.
+        self.addCleanup(peer.close)
+        self.transport = _StrictHostSignatureTransport(local)
+        self.addCleanup(self.transport.close)
+        self.transport.H = b"local host signature verification test"
+
+    def test_certificate_negotiation_checks_plain_sha2_signature_algorithm(self):
+        key = paramiko.RSAKey(key=rsa.generate_private_key(public_exponent=65537, key_size=2048))
+        for algorithm in ("rsa-sha2-256", "rsa-sha2-512"):
+            with self.subTest(algorithm=algorithm):
+                self.transport.host_key_type = algorithm + "-cert-v01@openssh.com"
+                signature = key.sign_ssh_data(self.transport.H, algorithm=algorithm).asbytes()
+                self.transport._verify_key(key.asbytes(), signature)
+                self.assertEqual(self.transport.host_key.asbytes(), key.asbytes())
+
+    def test_legacy_unknown_and_malformed_signature_algorithms_fail_closed(self):
+        for algorithm in (b"ssh-rsa", b"ssh-rsa-cert-v01@openssh.com", b"ssh-dss", b"unknown-peer-text", b"\xff", b""):
+            with self.subTest(algorithm=algorithm):
+                self.transport.host_key_type = "rsa-sha2-256"
+                signature = paramiko.Message()
+                signature.add_string(algorithm)
+                signature.add_string(b"untrusted signature bytes")
+                with self.assertRaises(paramiko.SSHException) as error:
+                    self.transport._verify_key(b"unused host key", signature.asbytes())
+                self.assertNotIn("unknown-peer-text", str(error.exception))
+        # Even an accidentally enabled legacy negotiation must not permit SHA-1.
+        self.transport.host_key_type = "ssh-rsa"
+        signature = paramiko.Message()
+        signature.add_string("ssh-rsa")
+        with self.assertRaises(paramiko.SSHException):
+            self.transport._verify_key(b"unused host key", signature.asbytes())
 
 
 if __name__ == "__main__":

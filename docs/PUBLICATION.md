@@ -73,6 +73,15 @@ and Ed25519. SHA-1 RSA signatures and legacy SHA-1 Diffie–Hellman exchanges ar
 disabled. These SSH interoperability rules are separate from the CA signing
 policy and do not establish BSI compliance.
 
+Python installations require Paramiko 5.0.0 or newer within the 5.x series.
+This release removes RSA/SHA-1 signing and verification, addressing
+[PYSEC-2026-2858 / CVE-2026-44405](https://github.com/advisories/GHSA-r374-rxx8-8654).
+Debian 13 uses its distribution-maintained Paramiko package. PKIMaster also
+checks the actual server signature algorithm against the negotiated host-key
+algorithm on each SFTP connection, including rekeying, and rejects RSA/SHA-1
+before authentication. This protects the publication connection on the older
+Debian library without changing Paramiko globally or suppressing audit findings.
+
 ## Automatic publication, status, and retries
 
 The APT package installs a system timer that checks pending publication every

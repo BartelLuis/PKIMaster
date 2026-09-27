@@ -136,6 +136,28 @@ def _artifacts(artifacts):
     return sorted(result, key=lambda artifact: ARTIFACT_ORDER[artifact["name"]])
 
 
+class _StrictHostSignatureTransport(paramiko.Transport):
+    """Bind the actual host signature to the negotiated modern algorithm.
+
+    Older distro Paramiko versions can verify a legacy RSA/SHA-1 signature
+    even when SHA-2 was negotiated. Algorithm negotiation alone therefore
+    does not protect the exchange (CVE-2026-44405). Keep this check local to
+    publication connections; Paramiko still verifies the signature itself.
+    """
+
+    def _verify_key(self, host_key, sig):
+        try:
+            signature_algorithm = paramiko.Message(sig).get_text()
+        except (UnicodeError, TypeError, ValueError):
+            raise paramiko.SSHException("Invalid SFTP host signature algorithm.") from None
+        negotiated = self.host_key_type.removesuffix("-cert-v01@openssh.com")
+        if signature_algorithm not in {
+                "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519",
+                "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"} or signature_algorithm != negotiated:
+            raise paramiko.SSHException("The SFTP host signature does not match the negotiated secure algorithm.")
+        return super()._verify_key(host_key, sig)
+
+
 class _PinnedHostKey(paramiko.MissingHostKeyPolicy):
     def __init__(self, expected):
         self.expected = expected
@@ -205,6 +227,7 @@ def publish(config: dict, artifacts: list[dict]) -> None:
                        password=None if key else value["password"], pkey=key,
                        allow_agent=False, look_for_keys=False, timeout=CONNECT_TIMEOUT,
                        banner_timeout=IO_TIMEOUT, auth_timeout=IO_TIMEOUT, channel_timeout=IO_TIMEOUT,
+                       transport_factory=_StrictHostSignatureTransport,
                        disabled_algorithms={"keys": ["ssh-rsa", "ssh-dss"], "pubkeys": ["ssh-rsa", "ssh-dss"],
                                             "kex": ["diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1"]})
         _check_deadline(deadline)
