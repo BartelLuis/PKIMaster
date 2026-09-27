@@ -35,6 +35,15 @@ def get(path):
         return response.read().decode("utf-8")
 
 
+def assert_not_found(path):
+    try:
+        get(path)
+    except urllib.error.HTTPError as error:
+        assert error.code == 404, f"Expected a deleted artifact at {path} to return 404, got {error.code}."
+    else:
+        raise AssertionError(f"Deleted artifact is still available at {path}.")
+
+
 def post(path, values, token_page=None):
     page = get(token_page or path)
     token = re.search(r'name="csrf_token" value="([^"]+)"', page)
@@ -140,7 +149,25 @@ if verify_upgrade:
     assert get("/authorities/1/chain") == original_chain, "Replacement must preserve the original CA chain."
     archived_crl = x509.load_pem_x509_crl(get("/crl/1.crl?format=pem").encode())
     assert archived_crl.is_signature_valid(certificate.public_key()), "The archived CA must retain its original CRL signing key."
-    print("Upgrade preserves MFA and the original CA key; revoked CA replacement preserves old certificates, chains and signed CRLs.")
+
+    # Explicit deletion is separate from revocation and frees the old display name.
+    page = get("/authorities/1")
+    assert 'name="confirmation_name"' in page, "A revoked CA must offer typed-name deletion confirmation."
+    post("/authorities/1/delete", {"confirmation_name": "Wrong CA"}, token_page="/authorities/1")
+    assert get("/authorities/1/cert") == original_pem, "An incorrect confirmation name must not delete the CA."
+    post("/authorities/1/delete", {"confirmation_name": "Smoke Root CA"}, token_page="/authorities/1")
+    for path in ("/authorities/1", "/authorities/1/cert", "/authorities/1/chain", "/crl/1.crl", "/aia/1.cer"):
+        assert_not_found(path)
+    assert x509.load_pem_x509_certificate(get("/authorities/2/cert").encode()) == replacement, "Deleting an archive must preserve the current CA."
+    post("/authorities/2/revoke", {"reason": "superseded"}, token_page="/authorities/2")
+    page = post("/authorities", {
+        "name": "Smoke Root CA", "role": "root", "common_name": "Smoke Root CA", "validity_days": "365",
+    }, token_page="/")
+    assert "Created root CA" in page, "A deleted CA's display name must be reusable."
+    reused_name = x509.load_pem_x509_certificate(get("/authorities/3/cert").encode())
+    assert reused_name.public_key().public_numbers() != certificate.public_key().public_numbers(), "Reusing a display name must generate a new key."
+    assert get("/authorities/2/cert"), "An undeleted revoked CA must remain archived."
+    print("Upgrade preserves MFA and CA keys; replacement retains archives; explicit deletion removes artifacts and frees the display name.")
 else:
     credentials = {"username": "smoke-admin", "password": secrets.token_urlsafe(32)}
     credential_file.write_text(json.dumps(credentials), encoding="utf-8")

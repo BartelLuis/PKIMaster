@@ -43,7 +43,7 @@
       <label>Role<select name="role"><option value="issuing">Issuing — external parent</option><option value="intermediate">Intermediate — external parent</option><option value="root">Root — self-signed</option></select></label>
     </div>
     <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="Operations Issuing CA"></label>
-    <p class="muted">Choose a unique display name for each CA. The certificate common name may match a previous CA.</p>
+    <p class="muted">Archived CA names remain reserved until an administrator permanently deletes that CA. A deleted CA's display name can be used again. The certificate common name may match a previous CA.</p>
     <label>Root validity in days (subordinate validity is assigned by the parent)<input name="validity_days" type="number" min="1" max="7300" value="3650" required></label>
     <button type="submit">Initialize this server's CA</button>
   </form>
@@ -52,7 +52,7 @@
 
 {% if archived_authorities %}
 <section class="card">
-  <div class="section-heading"><div><h2>Revoked CA archive</h2><p>Previous local CAs and their public artifacts remain available. Revocation is permanent.</p></div><span class="pill">{{ archived_authorities|length }} archived</span></div>
+  <div class="section-heading"><div><h2>Revoked CA archive</h2><p>Previous local CAs and their public artifacts remain available until explicitly deleted. Revocation is permanent.</p></div><span class="pill">{{ archived_authorities|length }} archived</span></div>
   <div class="table-scroll"><table>
     <thead><tr><th>Authority</th><th>Role</th><th>Revoked</th><th>Artifacts</th></tr></thead>
     <tbody>{% for archived in archived_authorities %}<tr>
@@ -65,6 +65,7 @@
         <a href="{{ url_for('download_authority', authority_id=archived['id'], artifact='chain') }}">Chain</a>
         <a href="{{ url_for('download_crl', authority_id=archived['id']) }}">CRL</a>
         {% elif archived['csr_pem'] %}<a href="{{ url_for('download_authority', authority_id=archived['id'], artifact='csr') }}">CSR</a>{% endif %}
+        {% if can_manage('admin') %}<a href="{{ url_for('authority_detail', authority_id=archived['id'], _anchor='delete-authority') }}">Delete CA</a>{% endif %}
       </td>
     </tr>{% endfor %}</tbody>
   </table></div>

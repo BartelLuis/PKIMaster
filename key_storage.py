@@ -59,10 +59,42 @@ def _new_authority_configuration(saved):
     return values
 
 
+def delete_authority_key_material(db, authority):
+    """Forget local credentials and bindings, never destroy an external key."""
+    from app import current_authority, private_key_cipher
+    from key_backends import public_key_fingerprint
+    if not db.in_transaction or not authority["revoked_at"]:
+        raise RuntimeError("Key cleanup requires a revoked CA and a transaction.")
+    public_key = (x509.load_pem_x509_certificate(authority["certificate_pem"].encode()).public_key()
+                  if authority["certificate_pem"] else x509.load_pem_x509_csr(authority["csr_pem"].encode()).public_key())
+    fingerprint = public_key_fingerprint(public_key)
+    db.execute("INSERT OR IGNORE INTO retired_ca_keys(public_key_sha256) VALUES (?)", (fingerprint,))
+    # Preserve other archives before changing the shared provider settings.
+    _archive_revoked_credentials()
+    saved = configuration()
+    reference = json.loads(authority["key_reference"] or "{}")
+    fingerprint_matches = saved.get("public_key_sha256") == fingerprint
+    reference_matches = (not saved.get("public_key_sha256") and saved.get("key_id")
+                         and saved["key_id"] == reference.get("key_id")
+                         and all(saved.get(field) == reference.get(field) for field in
+                                 ("module_path", "token_label", "token_serial", "vault_url")))
+    if (current_authority(db) is None and saved["backend"] == authority["key_backend"] != "software"
+            and (fingerprint_matches or reference_matches)):
+        if saved["backend"] == "azure" and not saved.get("key_name"):
+            saved["key_name"] = urlsplit(saved["key_id"]).path.split("/")[-2]
+        saved.pop("key_id", None)
+        saved.pop("public_key_sha256", None)
+        encrypted = private_key_cipher().encrypt(json.dumps(saved).encode()).decode()
+        db.execute("UPDATE settings SET value=? WHERE key='key_storage_config'", (encrypted,))
+    db.execute("DELETE FROM settings WHERE key=?", (f"authority_key_storage:{authority['id']}",))
+
+
 def _reject_revoked_key(signer):
     from app import get_db
     from key_backends import public_key_fingerprint
     fingerprint = public_key_fingerprint(signer.public_key())
+    if get_db().execute("SELECT 1 FROM retired_ca_keys WHERE public_key_sha256=?", (fingerprint,)).fetchone():
+        raise ValueError("The selected signing key belongs to a revoked CA. Select a different key or leave the existing key ID empty to generate a new one.")
     for authority in get_db().execute("SELECT certificate_pem, csr_pem FROM authorities WHERE revoked_at IS NOT NULL"):
         public_key = (x509.load_pem_x509_certificate(authority["certificate_pem"].encode()).public_key()
                       if authority["certificate_pem"] else x509.load_pem_x509_csr(authority["csr_pem"].encode()).public_key())

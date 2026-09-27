@@ -36,6 +36,8 @@ Treat creation as a key ceremony: a provider may have created a key even if a la
 
 After revocation, a replacement CA uses a new key or key version. The application retains encrypted provider credentials for archived CAs so their existing CRL endpoints can continue signing. Keep those provider identities and keys available. Credential changes in **Key storage** apply to the current CA; updating archived provider credentials is not supported through this page.
 
+Permanently deleting a revoked CA removes its locally stored signing key or external-key reference and its encrypted credential snapshot. Shared provider settings remain available for creating a fresh key, but an inherited key ID and public-key pin are cleared. Azure Key Vault and PKCS#11 objects are not destroyed; manage their retirement in the provider. A SHA-256 public-key fingerprint remains locally to prevent attaching a deleted, revoked signing key to a new CA. It contains no private-key material.
+
 ## Verification boundary
 
 The complete state backup also includes `pkimaster.audit-sealed`, which prevents a database schema downgrade from silently resealing fabricated legacy audit records. Restore the whole state directory, not selected database files. Protected external checkpoints are still necessary to detect replacement with an earlier valid database.

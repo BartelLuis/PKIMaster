@@ -433,7 +433,7 @@ def init_enterprise(app) -> None:
         factor_endpoints = {"mfa.enroll", "mfa.challenge", "enterprise.logout"}
         if g.user and not (session.get("mfa_verified") is True and g.user["mfa_secret"]) and endpoint not in factor_endpoints:
             return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
-        admin_endpoints = {"create_authority", "revoke_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
+        admin_endpoints = {"create_authority", "revoke_authority", "delete_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
                            "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
                            "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now"}
         operator_endpoints = {"create_certificate", "revoke_certificate"}

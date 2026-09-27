@@ -51,14 +51,43 @@ def queue_publication(db):
     db.execute("UPDATE publication_state SET generation=generation+1, next_attempt_at=0 WHERE id=1")
 
 
+def _configured_authority(db, config, *, exclude_id=None):
+    """Resolve ownership without falling back from a deleted CA to an archive."""
+    if "authority_id" in config:
+        return db.execute("SELECT * FROM authorities WHERE id=? AND id<>?",
+                          (config["authority_id"], exclude_id or -1)).fetchone()
+    # Older installations and settings saved before initialization have no owner.
+    return db.execute("SELECT * FROM authorities WHERE id<>? ORDER BY id DESC LIMIT 1",
+                      (exclude_id or -1,)).fetchone()
+
+
+def delete_authority_publication(db, authority):
+    """Remove local publication state while leaving remote files untouched."""
+    if not db.in_transaction or not authority["revoked_at"]:
+        raise RuntimeError("Publication cleanup requires a revoked CA and a transaction.")
+    config = configuration()
+    owner = _configured_authority(db, config)
+    retired = [target for target in config.get("retired_targets", []) if target["authority_id"] != authority["id"]]
+    if owner is not None and owner["id"] == authority["id"]:
+        # An explicit empty owner prevents an older archive from inheriting this
+        # destination when the current record is removed.
+        _save({**DEFAULTS, "authority_id": None, "retired_targets": retired})
+        db.execute("""UPDATE publication_state SET generation=0, published_generation=0,
+            last_attempt=NULL, last_success=NULL, last_error='', failures=0,
+            next_attempt_at=0, last_published_crl_number=NULL WHERE id=1""")
+    elif retired != config.get("retired_targets", []):
+        _save({**config, "retired_targets": retired})
+
+
 def reset_for_new_authority(db, authority_id):
     """Retire the old destination in the caller's locked creation transaction."""
     if not db.in_transaction:
         raise RuntimeError("Publication reset requires a transaction.")
-    previous = db.execute("SELECT id FROM authorities WHERE id<>? ORDER BY id DESC LIMIT 1", (authority_id,)).fetchone()
-    if previous is None:
-        return
     config = configuration()
+    previous = _configured_authority(db, config, exclude_id=authority_id)
+    if previous is None:
+        _save({**config, "authority_id": authority_id})
+        return
     retired = list(config.get("retired_targets", []))
     retired.append({"authority_id": previous["id"],
                     "crl_url": public_url("crl", previous["id"]) or "",
@@ -175,7 +204,7 @@ def _record_failure(db, authority_id, message):
 
 def run_publication_cycle():
     """One timer/manual attempt; content changes during upload remain pending."""
-    from app import get_db, build_ca_chain, current_authority
+    from app import get_db, build_ca_chain
     from audit_integrity import verify_chain
     db = get_db()
     with publication_lock() as acquired:
@@ -190,10 +219,7 @@ def run_publication_cycle():
         if state["next_attempt_at"] > time.time():
             db.rollback()
             return {"status": "waiting"}
-        authority = current_authority(db)
-        if authority is None:
-            # Continue serving a retired CA until its replacement is initialized.
-            authority = db.execute("SELECT * FROM authorities ORDER BY id DESC LIMIT 1").fetchone()
+        authority = _configured_authority(db, config)
         if not authority or authority["state"] != "active":
             db.rollback()
             return {"status": "waiting"}
@@ -285,7 +311,7 @@ def _form_configuration(saved):
 @publication.route("/settings/publication", methods=["GET", "POST"])
 @require_roles("admin")
 def settings():
-    from app import get_db, current_authority
+    from app import get_db
     db = get_db()
     status = 200
     if request.method == "POST":
@@ -311,9 +337,7 @@ def settings():
     config = configuration()
     state = dict(db.execute("SELECT * FROM publication_state WHERE id=1").fetchone())
     state["next_attempt"] = datetime.fromtimestamp(state["next_attempt_at"], UTC).isoformat() if state["next_attempt_at"] else None
-    authority = current_authority(db)
-    if authority is None:
-        authority = db.execute("SELECT * FROM authorities ORDER BY id DESC LIMIT 1").fetchone()
+    authority = _configured_authority(db, config)
     cached = db.execute("SELECT number,next_update FROM crls WHERE authority_id=?", (authority["id"],)).fetchone() if authority else None
     return render_template("publication.html", title="CRL & AIA publication", provider={key: value for key, value in config.items() if key not in SECRET_FIELDS},
                            has_password=bool(config.get("password")), has_key=bool(config.get("private_key_pem")),

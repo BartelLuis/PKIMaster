@@ -276,6 +276,76 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.configuration(), config)
         self.assertEqual(self.state(), state)
 
+    def test_deleting_publication_owner_forgets_credentials_and_can_initialize_same_name(self):
+        original = self.create_ca()
+        self.configure()
+        with patch("publication.publish"):
+            self.assertEqual(self.cycle()["status"], "published")
+        self.post(f"/authorities/{original['id']}/revoke", {"reason": "superseded"})
+        response = self.post(f"/authorities/{original['id']}/delete", {"confirmation_name": original["name"]})
+        self.assertEqual(response.status_code, 200)
+        config = self.configuration()
+        self.assertFalse(config["enabled"])
+        self.assertIsNone(config["authority_id"])
+        self.assertEqual((config["crl_url"], config["aia_url"]), ("", ""))
+        for field in ("password", "private_key_pem", "private_key_passphrase", "host", "directory"):
+            self.assertNotIn(field, config)
+        self.assertEqual(self.state()["generation"], 0)
+        self.assertEqual(self.state()["published_generation"], 0)
+        self.assertIsNone(self.state()["last_published_crl_number"])
+        self.assertIsNone(self.state()["last_success"])
+        self.assertEqual(self.get(f"/crl/{original['id']}.crl").status_code, 404)
+        self.assertEqual(self.get(f"/aia/{original['id']}.cer").status_code, 404)
+        with patch("publication.publish") as upload:
+            self.assertEqual(self.cycle(), {"status": "disabled"})
+            upload.assert_not_called()
+        replacement = self.create_ca(name=original["name"])
+        self.assertGreater(replacement["id"], original["id"])
+        self.assertEqual(self.configuration()["authority_id"], replacement["id"])
+        self.configure()
+        with patch("publication.publish") as upload:
+            self.assertEqual(self.cycle()["status"], "published")
+            certificate = next(item["content"] for item in upload.call_args.args[1] if item["name"] == "ca.cer")
+            self.assertEqual(x509.load_der_x509_certificate(certificate).serial_number, int(replacement["serial_number"], 0))
+
+    def test_deleting_older_archive_preserves_current_publication_and_pending_work(self):
+        original = self.create_ca()
+        self.configure()
+        self.post(f"/authorities/{original['id']}/revoke", {"reason": "superseded"})
+        replacement = self.create_ca(name="Replacement CA")
+        self.configure(crl_url="https://public.example/new/ca.crl", aia_url="https://public.example/new/ca.cer", directory="/public/new")
+        before_config, before_state = self.configuration(), self.state()
+        self.post(f"/authorities/{original['id']}/delete", {"confirmation_name": original["name"]})
+        self.assertEqual(self.configuration(), {**before_config, "retired_targets": []})
+        self.assertEqual(self.state(), before_state)
+        self.assertEqual(self.get(f"/crl/{original['id']}.crl").status_code, 404)
+        self.assertEqual(self.get(f"/aia/{replacement['id']}.cer").status_code, 200)
+        with patch("publication.publish") as upload:
+            self.assertEqual(self.cycle()["status"], "published")
+            self.assertEqual(upload.call_args.args[0]["directory"], "/public/new")
+
+    def test_deleting_latest_archive_cannot_publish_remaining_archive_to_deleted_target(self):
+        original = self.create_ca()
+        self.configure()
+        self.post(f"/authorities/{original['id']}/revoke", {"reason": "superseded"})
+        replacement = self.create_ca(name="Replacement CA")
+        self.configure(crl_url="https://public.example/new/ca.crl", aia_url="https://public.example/new/ca.cer", directory="/public/new")
+        self.post(f"/authorities/{replacement['id']}/revoke", {"reason": "superseded"})
+        self.post(f"/authorities/{replacement['id']}/delete", {"confirmation_name": replacement["name"]})
+        self.assertEqual(self.get(f"/aia/{original['id']}.cer").status_code, 200)
+        # Even explicit re-enabling must await a newly initialized CA.
+        self.configure(crl_url="https://public.example/future/ca.crl", aia_url="https://public.example/future/ca.cer", directory="/public/future")
+        with patch("publication.publish") as upload:
+            self.assertEqual(self.cycle(), {"status": "waiting"})
+            upload.assert_not_called()
+        self.assertIsNone(self.configuration()["authority_id"])
+        fresh = self.create_ca(name=replacement["name"])
+        self.assertEqual(self.configuration()["authority_id"], fresh["id"])
+        with patch("publication.publish") as upload:
+            self.assertEqual(self.cycle()["status"], "published")
+            certificate = next(item["content"] for item in upload.call_args.args[1] if item["name"] == "ca.cer")
+            self.assertEqual(x509.load_der_x509_certificate(certificate).serial_number, int(fresh["serial_number"], 0))
+
     def test_queue_commit_and_rollback_survive_application_restart(self):
         original = self.state()["generation"]
         with self.app.app_context():

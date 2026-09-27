@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 import sqlite3
 import sys
@@ -195,9 +196,9 @@ def create_app(test_config: dict | None = None) -> Flask:
     from security import security
     init_audit(app)
     app.register_blueprint(security)
-    from key_storage import init_key_storage, authority_signing_key, provision_authority_key
+    from key_storage import init_key_storage, authority_signing_key, provision_authority_key, delete_authority_key_material
     init_key_storage(app)
-    from publication import init_publication, ensure_crl, queue_publication, publication_lock, reset_for_new_authority
+    from publication import init_publication, ensure_crl, queue_publication, publication_lock, reset_for_new_authority, delete_authority_publication
     init_publication(app)
 
     @app.before_request
@@ -253,6 +254,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                                child_authorities=children, issued_certificates=certificates,
                                active=authority_is_active(authority), revocation_reasons=REVOCATION_REASONS,
                                block_reason=authority_block_reason(authority),
+                               deletion_counts=authority_deletion_counts(db, authority_id),
                                key_download_enabled=key_download_enabled())
 
     @app.post("/authorities")
@@ -275,7 +277,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 if current_authority(db):
                     raise ValueError("Only one CA may be current on this server. Revoke it before initializing a replacement.")
                 if db.execute("SELECT 1 FROM authorities WHERE name=?", (name,)).fetchone():
-                    raise ValueError("A CA with this name already exists in the archive. Choose a new name for the replacement CA.")
+                    raise ValueError("A CA with this name already exists in the archive. Delete the revoked CA to reuse its name, or choose another name.")
                 if parent_id:
                     raise ValueError("A parent CA must run on a separate server. Exchange a CSR and signed certificates through the web console.")
                 signer, backend, reference = provision_authority_key()
@@ -536,6 +538,48 @@ def create_app(test_config: dict | None = None) -> Flask:
     def revoke_authority(authority_id: int) -> Response:
         return revoke("authorities", authority_id)
 
+    @app.post("/authorities/<int:authority_id>/delete")
+    def delete_authority(authority_id: int) -> Response:
+        if not 0 < authority_id <= 9223372036854775807:
+            return Response("Not found", status=404)
+        db = get_db()
+        try:
+            with publication_lock() as acquired:
+                if not acquired:
+                    raise ValueError("Publication or CA initialization is in progress. Try deleting the CA again shortly.")
+                db.execute("BEGIN IMMEDIATE")
+                authority = get_authority(authority_id)
+                if authority is None:
+                    db.rollback()
+                    return Response("Not found", status=404)
+                if not authority["revoked_at"]:
+                    raise ValueError("Only a revoked CA can be deleted. Revoke this CA first.")
+                if request.form.get("confirmation_name", "") != authority["name"]:
+                    raise ValueError("Enter the CA name exactly to confirm permanent deletion.")
+                if db.execute("SELECT 1 FROM authorities WHERE parent_id=?", (authority_id,)).fetchone():
+                    raise ValueError("Another local CA still references this authority. Resolve its legacy parent relationship before deleting it.")
+                counts = authority_deletion_counts(db, authority_id)
+                delete_authority_key_material(db, authority)
+                delete_authority_publication(db, authority)
+                # Requests reference issued CA certificates; remove them first.
+                for table in ("ca_requests", "certificates", "issued_authorities", "crls"):
+                    db.execute(f"DELETE FROM {table} WHERE authority_id=?", (authority_id,))
+                db.execute("DELETE FROM authorities WHERE id=?", (authority_id,))
+                audit_event("authority.deleted", "authority", str(authority_id), json.dumps({
+                    "name": authority["name"], "serial_number": authority["serial_number"],
+                    "key_backend": authority["key_backend"], "deleted_records": counts,
+                }, sort_keys=True))
+                db.commit()
+            flash(f"Deleted CA '{authority['name']}' and its associated certificates, requests, CRLs and local key data. The name can be reused.", "success")
+            return redirect(url_for("index"))
+        except sqlite3.IntegrityError:
+            db.rollback()
+            flash("The CA still has linked data that prevents deletion. No data was deleted.", "error")
+        except ValueError as error:
+            db.rollback()
+            flash(str(error), "error")
+        return redirect(url_for("authority_detail", authority_id=authority_id))
+
     @app.post("/subordinates/<int:subordinate_id>/revoke")
     def revoke_subordinate(subordinate_id: int) -> Response:
         return revoke("issued_authorities", subordinate_id)
@@ -544,7 +588,9 @@ def create_app(test_config: dict | None = None) -> Flask:
     def download_subordinate(subordinate_id: int, artifact: str) -> Response:
         if not 0 < subordinate_id <= 9223372036854775807:
             return Response("Not found", status=404)
-        record = get_db().execute("SELECT * FROM issued_authorities WHERE id=?", (subordinate_id,)).fetchone()
+        db = get_db()
+        db.execute("BEGIN")
+        record = db.execute("SELECT * FROM issued_authorities WHERE id=?", (subordinate_id,)).fetchone()
         if record is None or artifact not in {"cert", "chain", "parents"}:
             return Response("Not found", status=404)
         body = record["certificate_pem"] if artifact == "cert" else build_ca_chain(record["authority_id"])
@@ -555,12 +601,14 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/crl/<int:authority_id>.crl")
     def download_crl(authority_id: int) -> Response:
         db = get_db()
+        db.execute("BEGIN IMMEDIATE")
         authority = get_authority(authority_id)
         if authority is None:
+            db.rollback()
             return Response("Not found", status=404)
         if authority["state"] != "active":
+            db.rollback()
             return Response("The local CA is awaiting activation.", status=409)
-        db.execute("BEGIN IMMEDIATE")
         try:
             der = ensure_crl(db, authority)
             db.commit()
@@ -603,14 +651,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         if artifact == "chain":
             if authority["state"] != "active":
                 return Response("The local CA is awaiting activation.", status=409)
-            return text_download(authority["name"], "chain.pem", build_ca_chain(authority_id))
+            return text_download(authority["name"], "chain.pem", authority["certificate_pem"] + authority["parent_chain_pem"])
         return Response("Not found", status=404)
 
     @app.get("/certificates/<int:certificate_id>/<artifact>")
     def download_certificate(certificate_id: int, artifact: str) -> Response:
         if not 0 < certificate_id <= 9223372036854775807:
             return Response("Not found", status=404)
-        certificate = get_db().execute("SELECT * FROM certificates WHERE id = ?", (certificate_id,)).fetchone()
+        db = get_db()
+        db.execute("BEGIN IMMEDIATE" if artifact == "key" else "BEGIN")
+        certificate = db.execute("SELECT * FROM certificates WHERE id = ?", (certificate_id,)).fetchone()
         if certificate is None:
             return Response("Not found", status=404)
         if artifact == "cert":
@@ -671,6 +721,9 @@ def init_db(app: Flask) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_certificates_authority ON certificates(authority_id);
             CREATE INDEX IF NOT EXISTS idx_authorities_parent ON authorities(parent_id);
+            CREATE TABLE IF NOT EXISTS retired_ca_keys (
+              public_key_sha256 TEXT PRIMARY KEY NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS issued_authorities (
               id INTEGER PRIMARY KEY AUTOINCREMENT, authority_id INTEGER NOT NULL REFERENCES authorities(id),
               common_name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('intermediate','issuing')),
@@ -718,8 +771,10 @@ def init_db(app: Flask) -> None:
             BEGIN SELECT RAISE(ABORT, 'Parent CAs must run on separate servers'); END;
             CREATE TRIGGER IF NOT EXISTS immutable_ca_identity BEFORE UPDATE OF id, role, common_name, private_key_pem, parent_id, csr_pem ON authorities
             BEGIN SELECT RAISE(ABORT, 'The local CA identity is immutable'); END;
-            CREATE TRIGGER IF NOT EXISTS preserve_local_ca BEFORE DELETE ON authorities
-            BEGIN SELECT RAISE(ABORT, 'The local CA cannot be deleted or replaced'); END;
+            DROP TRIGGER IF EXISTS preserve_local_ca;
+            CREATE TRIGGER preserve_local_ca BEFORE DELETE ON authorities
+            WHEN OLD.revoked_at IS NULL OR OLD.revoked_at = ''
+            BEGIN SELECT RAISE(ABORT, 'Only a revoked CA can be deleted'); END;
             CREATE TRIGGER IF NOT EXISTS preserve_active_ca_certificate BEFORE UPDATE OF certificate_pem, parent_chain_pem ON authorities
             WHEN OLD.state = 'active'
             BEGIN SELECT RAISE(ABORT, 'An active CA certificate cannot be replaced'); END;
@@ -738,6 +793,11 @@ def current_authority(db: sqlite3.Connection | None = None) -> sqlite3.Row | Non
     return (db if db is not None else get_db()).execute(
         "SELECT * FROM authorities WHERE revoked_at IS NULL ORDER BY id DESC LIMIT 1"
     ).fetchone()
+
+
+def authority_deletion_counts(db: sqlite3.Connection, authority_id: int) -> dict[str, int]:
+    return {table: db.execute(f"SELECT COUNT(*) FROM {table} WHERE authority_id=?", (authority_id,)).fetchone()[0]
+            for table in ("certificates", "issued_authorities", "ca_requests", "crls")}
 
 
 def list_authorities() -> list[sqlite3.Row]:

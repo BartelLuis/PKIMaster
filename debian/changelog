@@ -1,3 +1,13 @@
+pkimaster (0.2.4-1) trixie; urgency=medium
+
+  * Allow administrators to permanently delete revoked CAs and reuse names.
+  * Remove associated certificates, requests, CRLs and local signing data.
+  * Preserve audit evidence and prevent reuse of deleted revoked CA keys.
+  * Isolate publication cleanup and serialize deletion with CRL generation.
+  * Verify deletion and name reuse in installed-package smoke tests.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 20:21:00 +0200
+
 pkimaster (0.2.3-1) trixie; urgency=medium
 
   * Allow a fresh local CA after revocation while retaining issuer history.

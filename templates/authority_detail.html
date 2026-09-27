@@ -69,4 +69,24 @@
     {% endif %}
   </section>
 </div>
+{% if can_manage('admin') and authority['revoked_at'] %}
+<section class="card" id="delete-authority" style="margin-top:1rem;">
+  <div class="section-heading"><div><span class="eyebrow">Permanent deletion</span><h2>Delete revoked authority</h2></div></div>
+  <p class="notice notice-danger">This permanently deletes <strong>{{ authority['name'] }}</strong> and its associated data from this installation. This cannot be undone.</p>
+  <ul>
+    <li>{{ deletion_counts['certificates'] }} issued end-entity certificates and their locally stored private keys</li>
+    <li>{{ deletion_counts['issued_authorities'] }} issued subordinate CA certificates</li>
+    <li>{{ deletion_counts['ca_requests'] }} CA signing requests</li>
+    <li>The CA certificate, CSR, imported chains and parent CRLs, local signing key, and generated CRLs</li>
+    <li>Archived provider credentials and publication settings for this CA</li>
+  </ul>
+  <p>The CA's local certificate and CRL download URLs will stop working. Its display name becomes available for a new CA. Audit records remain.</p>
+  <p>Keys managed by PKCS#11 (including SoftHSM) or Azure Key Vault and files already uploaded to a publication server are not deleted automatically.</p>
+  <form method="post" action="{{ url_for('delete_authority', authority_id=authority['id']) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Type the CA display name to confirm: <strong>{{ authority['name'] }}</strong><input name="confirmation_name" required maxlength="100" autocomplete="off" spellcheck="false"></label>
+    <button type="submit" class="danger">Permanently delete CA and associated data</button>
+  </form>
+</section>
+{% endif %}
 {% endblock %}

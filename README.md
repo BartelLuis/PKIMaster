@@ -24,6 +24,8 @@ An optional Intermediate CA runs on another dedicated server. SQLite guards reje
 
 After revoking the current CA, return to **Certificate inventory** to initialize a new Root, Intermediate or Issuing CA on the same host. The **Revoked CA archive** retains the previous CA, its issued certificates, signing requests and public download URLs. A replacement gets its own identity and key; existing certificates stay associated with their original issuer. Revocation remains permanent. Continue distributing the old CA's CRL and arrange parent revocation or removal of root trust as appropriate.
 
+To remove a revoked CA permanently, select **Delete CA** in the **Revoked CA archive** and type its exact display name to confirm. Only administrators can delete a revoked CA. Deletion removes the CA and its associated issued certificates, CA signing requests, CRLs, locally stored keys and archived provider credentials. Its local certificate and CRL download URLs stop working, and its display name becomes available for reuse. Audit records remain. External HSM/Azure keys, previously uploaded publication files and backup copies are not deleted automatically. An undeleted archived CA continues to reserve its display name.
+
 Configure separate CRL/AIA publication URLs and a separate SFTP directory for the replacement before enabling uploads. Preserve the previous CA's public files and URLs for existing certificates.
 
 Use the [browser workflow and migration instructions](docs/BSI-READINESS.md#browser-workflow) to establish the hierarchy. At least two administrator accounts on each signing parent are required: one submits the child CSR and another approves it. On the child, import the signed certificate, public parent chain and current signed parent CRLs; verify the root fingerprint through a trusted channel. Missing or stale parent CRLs block signing.
@@ -77,11 +79,11 @@ Issue certificates through the server's current CA, using certificate requests, 
 
 ## Install with APT
 
-Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.3-1**, download [`pkimaster_0.2.3-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.3-1/pkimaster_0.2.3-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
+Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.4-1**, download [`pkimaster_0.2.4-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.4-1/pkimaster_0.2.4-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.2.3-1_all.deb
+sudo apt install ./pkimaster_0.2.4-1_all.deb
 ```
 
 Release assets also include `SHA256SUMS` and build metadata.
@@ -92,7 +94,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.2.3-1_all.deb
+sudo apt install ./dist/pkimaster_0.2.4-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. A signed public APT repository is not published by this project yet; `apt install ./…deb` resolves dependencies using your configured Debian repositories.
@@ -141,7 +143,7 @@ Revocation is permanent in this version, including the `certificate_hold` reason
 
 | Role | Permissions |
 | --- | --- |
-| Administrator | Manage CAs, issue/revoke certificates, manage users and settings, view audit history, export end-entity keys when policy allows |
+| Administrator | Manage CAs, permanently delete revoked CAs and their associated local data, issue/revoke certificates, manage users and settings, view audit history, export end-entity keys when policy allows |
 | Operator | Issue/revoke end-entity certificates and view inventory/audit history |
 | Auditor | View inventory, public certificate/chain downloads, and audit history |
 

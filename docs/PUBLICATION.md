@@ -58,6 +58,16 @@ needed, using its retained local CRL endpoint and signing provider. Changing the
 CA or its publication settings does not update trust stores or existing
 certificates on relying parties.
 
+Permanently deleting a revoked CA also removes its local CRL and AIA artifacts;
+its ID-based public URLs then return HTTP 404. Its saved publication target is
+removed. If the deleted CA owns the current publication configuration, deletion
+disables uploads, clears its URLs, destination and upload credentials, and resets
+the publication status. Deleting an older archive preserves the replacement CA's
+configuration and pending publication work. The worker never falls back to a
+different archived CA after deletion. Files already uploaded to SFTP remain on
+the remote server and must be managed there. Deletion is blocked while an upload
+is running; retry after it finishes.
+
 ## Connection fields
 
 | Field | Meaning |
