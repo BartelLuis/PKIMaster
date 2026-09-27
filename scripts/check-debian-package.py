@@ -49,6 +49,8 @@ def main() -> None:
         "usr/lib/pkimaster/key_storage.py", "usr/lib/pkimaster/audit_integrity.py", "usr/lib/pkimaster/security.py",
         "usr/lib/pkimaster/publication.py", "usr/lib/pkimaster/publication_transports.py",
         "usr/lib/pkimaster/publication_worker.py",
+        "usr/lib/pkimaster/backup.py", "usr/lib/pkimaster/renewal.py",
+        "usr/lib/pkimaster/monitoring.py", "usr/lib/pkimaster/monitoring_transports.py", "usr/lib/pkimaster/monitoring_worker.py",
         "usr/lib/pkimaster/static/css/console.css",
         "usr/lib/pkimaster/static/js/console.js",
         "usr/lib/pkimaster/templates/base.html", "usr/lib/pkimaster/templates/index.html",
@@ -57,6 +59,8 @@ def main() -> None:
         "usr/lib/pkimaster/templates/publication.html",
         "usr/lib/systemd/system/pkimaster-publication.service",
         "usr/lib/systemd/system/pkimaster-publication.timer",
+        "usr/lib/systemd/system/pkimaster-monitoring.service", "usr/lib/systemd/system/pkimaster-monitoring.timer",
+        "usr/lib/pkimaster/templates/certificate_renew.html", "usr/lib/pkimaster/templates/certificate_detail.html",
     }
     publication_docs = {"usr/share/doc/pkimaster/PUBLICATION.md", "usr/share/doc/pkimaster/PUBLICATION.md.gz"}.intersection(members)
     require(len(publication_docs) == 1, "Package must contain the publication operator documentation.")

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check PKIMaster expiry and public CRL health every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=5s
+Persistent=true
+Unit=pkimaster-monitoring.service
+
+[Install]
+WantedBy=timers.target

@@ -13,6 +13,16 @@ import publication_worker
 
 
 class PublicationWorkerTests(unittest.TestCase):
+    def test_pending_restore_prevents_application_startup(self):
+        with patch("backup.restore_pending", return_value=True), patch.object(publication_worker, "runtime_application") as factory:
+            self.assertEqual(publication_worker.run_once(), {"status": "waiting"})
+            factory.assert_not_called()
+
+    def test_startup_contention_is_deferred(self):
+        from backup import RestoreBusy
+        with patch("backup.restore_pending", return_value=False), patch.object(publication_worker, "runtime_application", side_effect=RestoreBusy("busy")):
+            self.assertEqual(publication_worker.run_once(), {"status": "busy"})
+
     def test_dispatch_uses_packaged_state_and_closes_application_context(self):
         application = Flask(__name__)
         result = {"status": "published", "generation": 3, "crl_number": 7}

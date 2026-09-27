@@ -1,3 +1,14 @@
+pkimaster (0.3.0-1) trixie; urgency=medium
+
+  * Add encrypted complete backups and a fresh-host restore assistant.
+  * Monitor certificate and CRL expiry with email or webhook alerts.
+  * Verify public CRL retrieval, signature and freshness independently.
+  * Add single-use MFA recovery codes and controlled authenticator changes.
+  * Renew certificates with CSR support and linked issuance history.
+  * Package a five-minute monitoring timer and extend recovery checks.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 21:22:00 +0200
+
 pkimaster (0.2.4-1) trixie; urgency=medium
 
   * Allow administrators to permanently delete revoked CAs and reuse names.

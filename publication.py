@@ -206,10 +206,13 @@ def run_publication_cycle():
     """One timer/manual attempt; content changes during upload remain pending."""
     from app import get_db, build_ca_chain
     from audit_integrity import verify_chain
-    db = get_db()
     with publication_lock() as acquired:
         if not acquired:
             return {"status": "busy"}
+        from backup import restore_pending
+        if restore_pending(Path(current_app.config["INSTANCE_PATH"])):
+            return {"status": "waiting"}
+        db = get_db()
         config = configuration()
         if not config["enabled"]:
             return {"status": "disabled"}

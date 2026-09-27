@@ -2,7 +2,8 @@
 {% block content %}
 <section class="card">
   <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Secure your account</span>
-  <h1>Set up your authenticator</h1>
+  <h1>{{ 'Replace your authenticator' if replacement else 'Set up your authenticator' }}</h1>
+  {% if replacement %}<p class="notice notice-warning">Your current authenticator stays active until you verify the new one below. Completing this change signs out other sessions and replaces all recovery codes.</p>{% endif %}
   <p>Scan this QR code with Bitwarden or another authenticator that supports SHA-256, then enter its current 6-digit code below.</p>
   <div class="mfa-qr" role="img" aria-label="QR code to set up your PKIMaster authenticator">{{ qr_svg }}</div>
   <details class="mfa-manual-setup">
@@ -18,12 +19,13 @@
       <dt>Digits / interval</dt><dd>6 digits / 30 seconds</dd>
     </dl>
   </details>
-  <p class="notice notice-warning">Store a protected backup of this setup key before continuing. There are no recovery codes or automated MFA resets in this version. A password reset does not remove the authenticator requirement.</p>
-  <form method="post" action="{{ url_for('mfa.enroll') }}">
+  <p class="notice notice-warning">{{ 'Save the new recovery codes shown after verification.' if replacement else 'After activation, open Account security to create one-use recovery codes and store them in a safe place.' }} A password reset does not remove the authenticator requirement.</p>
+  <form method="post" action="{{ url_for('mfa.replace' if replacement else 'mfa.enroll') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Current authenticator code <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required></label>
-    <button type="submit">Verify and activate authenticator</button>
+    <button type="submit">{{ 'Verify and replace authenticator' if replacement else 'Verify and activate authenticator' }}</button>
   </form>
+  {% if replacement %}<form method="post" action="{{ url_for('mfa.replace') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="cancel"><button class="secondary" type="submit">Cancel replacement</button></form>{% endif %}
   <p class="muted">Enrollment expires after 10 minutes. The QR code and setup details are shown only until enrollment is completed. Keep your device and server clocks synchronized.</p>
 </section>
 {% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">Certificate lifecycle</span><h1>{{ certificate['common_name'] }}</h1><p>Certificate identity, downloads and renewal history.</p></div><a href="{{ url_for('index') }}">Certificate inventory</a></div>
+<section class="card">
+  <h2>Certificate details</h2>
+  <dl><dt>Serial number</dt><dd class="mono">{{ certificate['serial_number'] }}</dd><dt>Issuer</dt><dd><a href="{{ url_for('authority_detail', authority_id=certificate['authority_id']) }}">{{ certificate['authority_name'] }}</a></dd><dt>Profile</dt><dd>{{ certificate['profile'] }}</dd><dt>SANs</dt><dd class="mono">{{ certificate['subject_alt_names'] or 'None' }}</dd><dt>Valid from</dt><dd>{{ certificate['not_before'] }}</dd><dt>Valid until</dt><dd>{{ certificate['not_after'] }}</dd><dt>Status</dt><dd>{% if certificate['revoked_at'] %}<span class="pill status-revoked">Revoked</span>{% elif certificate['not_after'] <= now %}<span class="pill status-expired">Expired</span>{% elif issuer_block_reason %}<span class="pill status-revoked">Issuer inactive</span>{% else %}<span class="pill status-active">Active</span>{% endif %}</dd></dl>
+  <div class="actions"><a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='cert') }}">Download certificate</a><a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">Download chain</a>{% if key_download_enabled and certificate['private_key_pem'] %}<a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='key') }}">Download key</a>{% endif %}</div>
+</section>
+<section class="card"><h2>Renewal history</h2><dl><dt>Predecessor</dt><dd>{% if predecessor %}<a href="{{ url_for('renewal.detail', certificate_id=predecessor['id']) }}">{{ predecessor['common_name'] }} · {{ predecessor['serial_number'] }}</a>{% else %}No retained predecessor{% endif %}</dd><dt>Successor</dt><dd>{% if successor %}<a href="{{ url_for('renewal.detail', certificate_id=successor['id']) }}">{{ successor['common_name'] }} · {{ successor['serial_number'] }}</a>{% else %}Not renewed{% endif %}</dd></dl>
+{% if not successor and not certificate['revoked_at'] and can_manage('admin', 'operator') %}<a class="button" href="{{ url_for('renewal.renew', certificate_id=certificate['id']) }}">Renew certificate</a>{% endif %}
+</section>
+{% endblock %}

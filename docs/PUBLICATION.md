@@ -143,6 +143,13 @@ that expiry is not repeatedly reissued with the same expiry. The worker cannot
 extend an expired CA or operate an unavailable signing provider; publication
 status and actual public retrieval should be monitored accordingly.
 
+Use **Monitoring & alerts** for independent public HTTP(S) CRL retrieval checks,
+expiry warnings and email/webhook delivery. The monitoring timer runs every five
+minutes; it checks signatures, CRL numbers and known revocations rather than
+assuming a successful SFTP upload proves fresh public data. See [monitoring
+configuration](MONITORING.md). Relying-party revocation enforcement and external
+monitoring of the CA host still require deployment configuration.
+
 ## Required SFTP behavior and permissions
 
 The server must implement the OpenSSH `posix-rename@openssh.com` extension,

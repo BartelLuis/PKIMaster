@@ -4,6 +4,7 @@
   <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Initial configuration</span>
   <h1>Set up your PKI</h1>
   <p>Create your first administrator and configure your organization. Initial setup is available only through a localhost connection.</p>
+  <p>Already have a backup? <a href="{{ url_for('backup.restore') }}">Restore an existing installation</a> before creating an administrator.</p>
   <form method="post" action="{{ url_for('enterprise.setup') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Organization <input name="organization" value="{{ request.form.get('organization', '') }}" maxlength="200" required autocomplete="organization"></label>

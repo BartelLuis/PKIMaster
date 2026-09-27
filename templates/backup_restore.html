@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Fresh-host recovery</span>
+  <h1>Restore an existing installation</h1>
+  <p>Recover the original CA identity, certificates, users, settings and audit history from an encrypted PKIMaster backup.</p>
+  <p class="notice">Recovery is available only before creating an administrator and only through localhost. Existing installations cannot be overwritten.</p>
+  <form method="post" enctype="multipart/form-data" action="{{ url_for('backup.restore') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Encrypted backup <input type="file" name="archive" accept=".pkibackup" required></label>
+    <label>Backup passphrase <input type="password" name="passphrase" minlength="20" maxlength="256" autocomplete="off" required></label>
+    <label class="checkbox-label"><input type="checkbox" name="source_stopped" required> The original installation is stopped. This host will be the only active copy of its CA.</label>
+    <p class="form-hint">The archive is authenticated, and its database, audit chain and encrypted keys are checked before any installation files are replaced. Maximum archive size: 128 MiB.</p>
+    <button type="submit">Verify and restore installation</button>
+  </form>
+  <p><a href="{{ url_for('enterprise.setup') }}">Back to initial setup</a></p>
+</section>
+{% endblock %}

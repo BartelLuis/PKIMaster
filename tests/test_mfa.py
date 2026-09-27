@@ -46,7 +46,7 @@ class TotpVectorTests(unittest.TestCase):
                     self.assertEqual(totp(base64.b32encode(key).decode(), at, digits=8, algorithm=algorithm), code)
 
 
-class MfaAccessTests(unittest.TestCase):
+class MfaTestCase(unittest.TestCase):
     password = "a sufficiently long test passphrase"
 
     def setUp(self):
@@ -87,6 +87,8 @@ class MfaAccessTests(unittest.TestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         return unescape(uri.group(1)), qr.group(1)
 
+
+class MfaAccessTests(MfaTestCase):
     def test_bitwarden_defaults_fail_but_provisioned_sha256_enrolls(self):
         # Use the RFC SHA-256 key and an independent implementation to exercise
         # the same parameters an authenticator receives from the setup URI.

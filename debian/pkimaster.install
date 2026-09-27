@@ -9,6 +9,11 @@ security.py usr/lib/pkimaster
 publication.py usr/lib/pkimaster
 publication_transports.py usr/lib/pkimaster
 publication_worker.py usr/lib/pkimaster
+backup.py usr/lib/pkimaster
+renewal.py usr/lib/pkimaster
+monitoring.py usr/lib/pkimaster
+monitoring_transports.py usr/lib/pkimaster
+monitoring_worker.py usr/lib/pkimaster
 pki.py usr/lib/pkimaster
 pkimaster_server.py usr/lib/pkimaster
 templates usr/lib/pkimaster

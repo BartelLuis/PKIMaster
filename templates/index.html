@@ -39,7 +39,7 @@
   <div class="table-scroll"><table>
     <thead><tr><th>Common name / SANs</th><th>Issuer / profile</th><th>Status / expires</th><th>Actions</th></tr></thead>
     <tbody>{% for certificate in certificates %}<tr>
-      <td><span class="mono cell-title">{{ certificate['common_name'] }}</span><br><small class="mono">{{ certificate['subject_alt_names'] }}</small></td>
+      <td><a class="mono cell-title" href="{{ url_for('renewal.detail', certificate_id=certificate['id']) }}">{{ certificate['common_name'] }}</a><br><small class="mono">{{ certificate['subject_alt_names'] }}</small>{% if certificate['renewed_from_id'] %}<br><small>Renewed from <a href="{{ url_for('renewal.detail', certificate_id=certificate['renewed_from_id']) }}">#{{ certificate['renewed_from_id'] }}</a></small>{% endif %}</td>
       <td>{{ certificate['authority_name'] }}<br><small>{{ certificate['profile'] }}</small></td>
       <td>
         {% if certificate['revoked_at'] %}<span class="pill status-revoked">Revoked</span>
@@ -53,6 +53,7 @@
         <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">Chain</a>
         {% if key_download_enabled and certificate['private_key_pem'] %}<a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='key') }}">Key</a>{% endif %}
         {% if can_manage('admin', 'operator') and not certificate['revoked_at'] %}
+        <a href="{{ url_for('renewal.renew', certificate_id=certificate['id']) }}">Renew</a>
         <details><summary>Revoke</summary>
           <form method="post" action="{{ url_for('revoke_certificate', certificate_id=certificate['id']) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

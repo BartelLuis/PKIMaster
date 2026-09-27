@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading"><div><p class="eyebrow">Reliable operation</p><h1>Monitoring &amp; alerts</h1><p>Certificate expiry, CA status and public CRL availability.</p></div></section>
+<section class="card"><h2>Monitoring status</h2>
+<p class="muted">Checks cover parent CRL validity, publication failures and the CRLs clients actually download. The packaged service checks every five minutes.</p>
+<div class="grid stats-grid"><div class="stat"><span class="stat-label">Active findings</span><strong>{{ findings|length }}</strong></div>
+<div class="stat"><span class="stat-label">Recently resolved</span><strong>{{ recovered|length }}</strong></div>
+<div class="stat"><span class="stat-label">Notifications</span><strong>{{ channel|capitalize if channel != 'none' else 'Disabled' }}</strong></div>
+<div class="stat"><span class="stat-label">Public CRL checks</span><strong>{{ 'Enabled' if public_checks else 'Disabled' }}</strong></div></div>
+<dl><dt>Last completed check</dt><dd>{{ state.last_check or 'No check has run yet' }}</dd>
+<dt>Public endpoints checked in that run</dt><dd>{{ state.public_checked }}</dd>
+<dt>Last notification delivery</dt><dd>{{ state.last_delivery or 'No notifications delivered yet' }}</dd></dl>
+{% if not public_checks %}<p class="notice notice-warning">Public retrieval is disabled. Existing public findings retain their last observed state. Re-enable checks to verify recovery.</p>{% endif %}
+{% if state.notification_error %}<p class="notice notice-danger">{{ state.notification_error }} Automatic delivery retries with a delay of up to one hour.</p>{% endif %}
+{% if can_manage('admin') %}<div class="actions"><form method="post" action="{{ url_for('monitoring.check_now') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Run checks now</button></form><a href="{{ url_for('monitoring.settings') }}">Notification settings</a></div>{% endif %}
+</section>
+<section class="card"><h2>Active findings</h2>
+{% for finding in findings %}<article class="notice {{ 'notice-danger' if finding.severity == 'error' else 'notice-warning' }}"><div><strong>{{ finding.title }}</strong><p>{{ finding.detail }}</p><p class="muted">First detected: {{ finding.first_seen }} · Last checked: {{ finding.last_seen }}</p></div></article>
+{% else %}<p class="muted">{{ 'No active findings in the last completed check.' if state.last_check else 'Run a check to assess this installation.' }}</p>{% endfor %}
+</section>
+{% if recovered %}<section class="card"><h2>Recently resolved</h2><div class="table-scroll"><table><thead><tr><th>Finding</th><th>Resolved</th><th>Status</th></tr></thead><tbody>
+{% for finding in recovered %}<tr><td>{{ finding.title }}</td><td>{{ finding.changed_at }}</td><td><span class="pill">Resolved</span></td></tr>{% endfor %}
+</tbody></table></div></section>{% endif %}
+{% endblock %}

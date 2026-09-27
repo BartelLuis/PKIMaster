@@ -20,7 +20,7 @@ flowchart LR
   Issuing -->|Issue certificates| Services["Applications and devices"]
 ```
 
-An optional Intermediate CA runs on another dedicated server. SQLite guards reject a second current local CA, including one awaiting activation, and startup refuses databases containing multiple non-revoked local CAs without deleting any data. Parent servers retain only the public certificates they issue for remote CAs. CA private keys cannot be exported through the web console.
+An optional Intermediate CA runs on another dedicated server. SQLite guards reject a second current local CA, including one awaiting activation, and startup refuses databases containing multiple non-revoked local CAs without deleting any data. Parent servers retain only the public certificates they issue for remote CAs. Standalone CA private-key downloads are forbidden; encrypted disaster-recovery backups include locally stored CA material.
 
 After revoking the current CA, return to **Certificate inventory** to initialize a new Root, Intermediate or Issuing CA on the same host. The **Revoked CA archive** retains the previous CA, its issued certificates, signing requests and public download URLs. A replacement gets its own identity and key; existing certificates stay associated with their original issuer. Revocation remains permanent. Continue distributing the old CA's CRL and arrange parent revocation or removal of root trust as appropriate.
 
@@ -79,11 +79,11 @@ Issue certificates through the server's current CA, using certificate requests, 
 
 ## Install with APT
 
-Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.4-1**, download [`pkimaster_0.2.4-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.4-1/pkimaster_0.2.4-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
+Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.3.0-1**, download [`pkimaster_0.3.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.3.0-1/pkimaster_0.3.0-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.2.4-1_all.deb
+sudo apt install ./pkimaster_0.3.0-1_all.deb
 ```
 
 Release assets also include `SHA256SUMS` and build metadata.
@@ -94,7 +94,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.2.4-1_all.deb
+sudo apt install ./dist/pkimaster_0.3.0-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. A signed public APT repository is not published by this project yet; `apt install ./…deb` resolves dependencies using your configured Debian repositories.
@@ -107,7 +107,7 @@ ssh -L 8443:127.0.0.1:8443 administrator@pki-server
 
 Open **https://localhost:8443/setup** in your browser. The initial certificate is self-signed, so the browser will ask you to trust it. Use a local connection or an SSH connection to a server whose host key you have verified for initial setup.
 
-Create the first administrator and organization through the setup page. There are no default credentials. Setup accepts only loopback connections and closes permanently after the first administrator is created. All users must enroll a SHA-256 TOTP authenticator (six digits, 30 seconds) before accessing the PKI. Scan the enrollment QR code or copy the complete `otpauth://` URI into your authenticator, including Bitwarden, so it uses the correct algorithm and settings. Store the enrollment key securely: automated MFA recovery is not yet available.
+Create the first administrator and organization through the setup page. There are no default credentials. Setup accepts only loopback connections and closes permanently after the first administrator is created. All users must enroll a SHA-256 TOTP authenticator (six digits, 30 seconds) before accessing the PKI. Scan the enrollment QR code or copy the complete `otpauth://` URI into your authenticator, including Bitwarden, so it uses the correct algorithm and settings. Then open **Account security** and generate recovery codes with a fresh authenticator code. Store the codes separately: they are shown once, and each can be used once after your normal sign-in to enroll a replacement authenticator.
 
 ## Web-only configuration
 
@@ -127,24 +127,33 @@ The APT package includes a publication timer that checks every minute. Revocatio
 
 ## Certificate management
 
+- Renew from the inventory or certificate details. CN, SANs and profile are prefilled; review them, provide a new CSR or explicitly generate a new key, and issue a linked successor. The previous certificate remains unchanged. Details link both generations; repeated submission cannot create a second successor. Renewal uses the current Issuing CA and its normal validity, key-strength and parent-CRL checks. Revoked certificates require a new issuance instead.
 - One local Root, Intermediate, or Issuing CA per dedicated server, with CSR-based external signing. New CA certificates and CSRs omit `pathLenConstraint`.
 - TLS server, TLS client, or combined certificate profiles; DNS and IP SANs, including validated IDNA names.
 - Sign an existing PEM CSR to keep its private key outside the service, or generate an RSA4096 key. CSR signatures and key strength are checked, and arbitrary requested extensions are not copied.
 - Issued validity never exceeds issuer validity or the configured leaf lifetime limit. Expired, revoked, or not-yet-valid ancestors block issuance.
 - Certificate and subordinate CA revocation with reasons, signed DER CRLs, monotonically increasing CRL numbers, and cache invalidation on revocation.
 - Disabling the local CA stops its signing. Revoke a subordinate on its parent server and distribute the new CRL. Remove a distrusted root from relying-party trust stores. Disconnected servers learn parent revocation only when updated CRLs are imported.
-- Certificate and chain downloads, searchable paginated inventory, and expiry counts. Generated end-entity key exports are disabled by default, restricted to administrators when enabled, and audited. CA key exports are always forbidden.
+- Certificate and chain downloads, searchable paginated inventory, and expiry counts. Generated end-entity key exports are disabled by default, restricted to administrators when enabled, and audited. Standalone CA key downloads are forbidden; local CA material is included only in encrypted complete-state backups.
 
 Path-length limits already present in parent certificates are enforced against the actual CA chain. Existing signed certificates retain their limits; removing them requires reissuance.
 
-Revocation is permanent in this version, including the `certificate_hold` reason. Relying parties must be configured to check CRLs; publication alone does not make clients enforce revocation. CRLs are refreshed on request and by the enabled SFTP publication timer, and cannot be signed by expired CAs. Publication status confirms the SFTP transfer; monitor HTTP(S) retrieval and CRL freshness independently.
+Revocation is permanent in this version, including the `certificate_hold` reason. Relying parties must be configured to check CRLs; publication alone does not make clients enforce revocation. CRLs are refreshed on request and by the enabled SFTP publication timer, and cannot be signed by expired CAs.
+
+## Monitoring and recovery
+
+**Monitoring & alerts** reports expiring certificates, CA chains, parent CRLs and publication problems. The Debian monitoring timer runs every five minutes and independently retrieves configured public CRL URLs to check reachability, signature and freshness. Administrators can configure warning thresholds and encrypted SMTP or HTTPS webhook credentials. Notifications are disabled until configured; repeated unchanged findings are deduplicated and resolutions are reported. See the [monitoring guide](docs/MONITORING.md) for network restrictions and delivery behavior.
+
+**Backup & restore** exports a passphrase-encrypted snapshot of the database, encryption secrets, audit records, HTTPS identities and managed local SoftHSM state. Export requires administrator access and a fresh TOTP code. On a fresh host, use **Restore a backup** from initial setup through localhost or an SSH tunnel. Stop the source host first; the packaged supervisor validates and installs the snapshot with web workers stopped. The CA identity is preserved, while existing browser sessions are invalidated. External HSM/Azure keys require their provider's recovery process. See the [backup and restore guide](docs/BACKUP.md) for limits and recovery verification.
+
+**Account security** supports one-use recovery codes and authenticator replacement. Changing authenticators requires a fresh current code, or normal sign-in followed by an unused recovery code. The previous authenticator stays active until the replacement is verified. Completing replacement invalidates previous sessions and recovery codes and shows a fresh recovery set once. Password resets do not remove MFA.
 
 ## Administration and security
 
 | Role | Permissions |
 | --- | --- |
 | Administrator | Manage CAs, permanently delete revoked CAs and their associated local data, issue/revoke certificates, manage users and settings, view audit history, export end-entity keys when policy allows |
-| Operator | Issue/revoke end-entity certificates and view inventory/audit history |
+| Operator | Issue/renew/revoke end-entity certificates and view inventory, monitoring and audit history |
 | Auditor | View inventory, public certificate/chain downloads, and audit history |
 
 Administrators create and deactivate accounts and reset local passwords in **Users**. Local users can change their own password; external passwords remain managed by the identity provider. Deactivation and password changes invalidate existing sessions; the last enabled administrator able to use the selected authentication mode cannot be deactivated. Sessions use secure cookies in the packaged service, all forms require CSRF protection, and password and TOTP failures are throttled in shared persistent storage. Successful TOTP codes cannot be replayed; password reset retains MFA.
@@ -160,15 +169,17 @@ sudo systemctl status pkimaster
 sudo journalctl -u pkimaster
 sudo systemctl status pkimaster-publication.timer
 sudo journalctl -u pkimaster-publication.service
+sudo systemctl status pkimaster-monitoring.timer
+sudo journalctl -u pkimaster-monitoring.service
 ```
 
-State lives in `/var/lib/pkimaster`, including the SQLite database, `runtime-secrets.json`, `server-tls/` and optional `softhsm/` tokens. Back up the complete directory together; the database alone cannot recover encrypted keys, provider credentials or MFA secrets. External HSM/Azure keys require the provider's separate backup, retention and recovery procedures. Stop the publication timer, active worker and web service for a consistent file-level backup and protect backups as CA key material:
+State lives in `/var/lib/pkimaster`, including the SQLite database, `runtime-secrets.json`, `server-tls/` and optional `softhsm/` tokens. Prefer **Backup & restore** for encrypted application snapshots. For a manual file-level backup, stop both timers, active workers and the web service. The database alone cannot recover encrypted keys, provider credentials or MFA secrets. External HSM/Azure keys require the provider's separate backup, retention and recovery procedures. Protect manual archives as CA key material:
 
 ```sh
-sudo systemctl stop pkimaster-publication.timer
-sudo systemctl stop pkimaster-publication.service pkimaster
+sudo systemctl stop pkimaster-publication.timer pkimaster-monitoring.timer
+sudo systemctl stop pkimaster-publication.service pkimaster-monitoring.service pkimaster
 sudo sh -c 'umask 077; tar -C /var/lib -czf /root/pkimaster-backup.tar.gz pkimaster'
-sudo systemctl start pkimaster pkimaster-publication.timer
+sudo systemctl start pkimaster pkimaster-publication.timer pkimaster-monitoring.timer
 ```
 
 Restore the complete directory with ownership `_pkimaster:_pkimaster`, directory mode `0700`, and private file modes before starting the service. Package removal and purge deliberately retain the state directory and its system user to avoid destroying CA keys.

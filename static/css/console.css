@@ -1842,6 +1842,10 @@ fieldset label:last-child {
   margin-top:26px;
 }
 
+.card dl+form {
+  margin-top:24px;
+}
+
 .auth-shell .card>h2 {
   margin-top:0;
 }

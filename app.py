@@ -191,6 +191,8 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     app.jinja_env.globals["csrf_token"] = get_csrf_token
     app.jinja_env.globals["has_endpoint"] = lambda name: name in app.view_functions
+    from backup import init_backup
+    init_backup(app)
     init_enterprise(app)
     from audit_integrity import init_audit, verify_chain, AuditIntegrityError
     from security import security
@@ -200,6 +202,10 @@ def create_app(test_config: dict | None = None) -> Flask:
     init_key_storage(app)
     from publication import init_publication, ensure_crl, queue_publication, publication_lock, reset_for_new_authority, delete_authority_publication
     init_publication(app)
+    from monitoring import init_monitoring
+    init_monitoring(app)
+    from renewal import init_renewal
+    init_renewal(app)
 
     @app.before_request
     def protect_audit_integrity():
@@ -561,6 +567,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 counts = authority_deletion_counts(db, authority_id)
                 delete_authority_key_material(db, authority)
                 delete_authority_publication(db, authority)
+                from monitoring import delete_authority_monitoring
+                delete_authority_monitoring(db, authority_id)
                 # Requests reference issued CA certificates; remove them first.
                 for table in ("ca_requests", "certificates", "issued_authorities", "crls"):
                     db.execute(f"DELETE FROM {table} WHERE authority_id=?", (authority_id,))
@@ -832,6 +840,8 @@ def text_download(stem: str, suffix: str, body: str) -> Response:
 
 def main() -> None:
     # Development only; the Debian service supplies HTTPS and fixed state paths.
+    from backup import apply_pending_restore
+    apply_pending_restore(Path(__file__).parent / "instance")
     create_app({"SESSION_COOKIE_SECURE": False}).run(host="127.0.0.1", port=8000)
 
 

@@ -138,7 +138,7 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                         for row in connection.execute(f"SELECT {column} FROM users WHERE {column} IS NOT NULL"):
                             cipher.decrypt(row[0].encode("utf-8"))
             if "settings" in tables:
-                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config') OR key GLOB 'authority_key_storage:*'"):
+                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config', 'monitoring_config') OR key GLOB 'authority_key_storage:*'"):
                     cipher.decrypt(row[0].encode("utf-8"))
             if "identity_settings" in tables:
                 for row in connection.execute("SELECT payload FROM identity_settings"):
@@ -383,8 +383,8 @@ def init_enterprise(app) -> None:
         from identity import init_identity
         init_identity(connection)
     app.register_blueprint(enterprise)
-    from mfa import mfa
-    app.register_blueprint(mfa)
+    from mfa import init_mfa
+    init_mfa(app)
     from identity import identity, public_config, user_allowed
     app.register_blueprint(identity)
 
@@ -401,9 +401,9 @@ def init_enterprise(app) -> None:
         if not installed:
             if not _local_setup_request():
                 return Response("Initial setup is available only from localhost. Connect through a local browser or an SSH tunnel.", status=403)
-            if endpoint != "enterprise.setup":
+            if endpoint not in {"enterprise.setup", "backup.restore"}:
                 return redirect(url_for("enterprise.setup"))
-        elif endpoint == "enterprise.setup":
+        elif endpoint in {"enterprise.setup", "backup.restore"}:
             return Response("Initial setup has already been completed.", status=404)
         user_id = session.get("user_id")
         if user_id:
@@ -430,13 +430,14 @@ def init_enterprise(app) -> None:
                 return Response("Cross-origin form submission is not allowed.", status=403)
             if not validate_csrf():
                 return Response("The form expired or its security token is invalid. Reload the page and try again.", status=403)
-        factor_endpoints = {"mfa.enroll", "mfa.challenge", "enterprise.logout"}
+        factor_endpoints = {"mfa.enroll", "mfa.challenge", "mfa.recover", "mfa.replace", "enterprise.logout"}
         if g.user and not (session.get("mfa_verified") is True and g.user["mfa_secret"]) and endpoint not in factor_endpoints:
             return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
         admin_endpoints = {"create_authority", "revoke_authority", "delete_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
                            "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
-                           "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now"}
-        operator_endpoints = {"create_certificate", "revoke_certificate"}
+                           "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now",
+                           "backup.settings", "backup.export", "monitoring.settings", "monitoring.check_now"}
+        operator_endpoints = {"create_certificate", "revoke_certificate", "renewal.renew"}
         if endpoint in admin_endpoints and not can_manage("admin"):
             abort(403)
         if endpoint in operator_endpoints and not can_manage("admin", "operator"):
@@ -444,7 +445,7 @@ def init_enterprise(app) -> None:
         if endpoint in {"download_authority", "download_certificate"} and (request.view_args or {}).get("artifact") == "key":
             if not can_manage("admin") or not get_setting("allow_key_export"):
                 abort(403)
-        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password", "identity.oidc_start"}
+        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password", "identity.oidc_start", "mfa.account", "backup.restore"}
         if request.method not in {"GET", "HEAD", "OPTIONS"} and endpoint not in known_mutations:
             abort(403)
 
@@ -486,6 +487,10 @@ def setup():
             password_hash = generate_password_hash(password)
             db = _db()
             db.execute("BEGIN IMMEDIATE")
+            from backup import restore_pending
+            if restore_pending(Path(current_app.config["INSTANCE_PATH"])):
+                db.rollback()
+                return Response("Recovery is in progress. Wait for the service to restart.", status=503)
             if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
                 db.rollback()
                 abort(404)

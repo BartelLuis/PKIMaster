@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <p class="eyebrow">{{ current_user['username'] }}</p><h1>Account security</h1>
+  <p>Your authenticator protects local, LDAP and OpenID Connect sign-ins. Each change below requires a fresh code from your current authenticator.</p>
+  <h2>Recovery codes</h2>
+  <p><strong>{{ remaining }}</strong> unused recovery codes remain.</p>
+  {% if not remaining %}<p class="notice notice-warning">Create recovery codes now so you can regain access if your authenticator is lost.</p>{% endif %}
+  <p>Each code can be used once, after your normal sign-in, to enroll a new authenticator. Generating a new set invalidates previous recovery codes and signs out other sessions.</p>
+  <form method="post" action="{{ url_for('mfa.account') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="generate_recovery">
+    <label>Current authenticator code <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required></label>
+    <button type="submit">{{ 'Replace recovery codes' if remaining else 'Create recovery codes' }}</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Change authenticator</h2>
+  <p>Verify your current authenticator, then scan a new QR code. Your existing authenticator stays active until the new one is verified. Completing the change invalidates previous sessions and recovery codes.</p>
+  <form method="post" action="{{ url_for('mfa.account') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="replace">
+    <label>Current authenticator code <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required></label>
+    <button class="secondary" type="submit">Set up replacement authenticator</button>
+  </form>
+  <p class="muted">A code already used to sign in cannot authorize another action. Wait for the next 30-second code if needed.</p>
+</section>
+{% endblock %}

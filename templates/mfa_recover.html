@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Account recovery</span>
+  <h1>Recover your authenticator</h1>
+  <p>Your account credentials were accepted. Enter one unused recovery code for {{ current_user['username'] }}, then scan and verify a new authenticator.</p>
+  <p class="notice notice-warning">The recovery code is consumed immediately and existing sessions are signed out. PKI access remains locked until the replacement authenticator is verified. Your original authenticator stays active until that verification completes.</p>
+  <form method="post" action="{{ url_for('mfa.recover') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Recovery code <input class="mono" name="recovery_code" maxlength="100" autocomplete="off" spellcheck="false" required autofocus></label>
+    <button type="submit">Use code and replace authenticator</button>
+  </form>
+  <p><a href="{{ url_for('mfa.challenge') }}">Use your current authenticator instead</a></p>
+  <p class="muted">A password reset cannot bypass MFA. If you have lost both your authenticator and all recovery codes, use your protected authenticator backup.</p>
+</section>
+{% endblock %}

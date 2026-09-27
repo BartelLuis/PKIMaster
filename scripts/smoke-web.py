@@ -107,6 +107,9 @@ def complete_authentication(credentials):
     page = post("/mfa/enroll" if enrollment else "/mfa/challenge", {"code": totp(credentials["mfa_secret"], code_time)})
     assert "Local certificate authority" in page, "Mandatory MFA did not complete."
     credential_file.write_text(json.dumps(credentials), encoding="utf-8")
+    for path, expected in (("/account/security", "Recovery codes"), ("/settings/backup", "Create an encrypted backup"),
+                           ("/monitoring", "Monitoring &amp; alerts"), ("/monitoring/settings", "Monitoring settings")):
+        assert expected in get(path), f"Installed feature page is unavailable: {path}"
 
 
 if verify_upgrade:

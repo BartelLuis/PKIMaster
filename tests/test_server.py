@@ -6,12 +6,13 @@ import sqlite3
 import ssl
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from pkimaster_server import _Configuration, _reject_configuration, ensure_bootstrap_tls, read_listener, tls_bundle
+from pkimaster_server import _Configuration, _reject_configuration, ensure_bootstrap_tls, read_listener, runtime_application, supervise, tls_bundle
 
 
 class PackagedRuntimeTests(unittest.TestCase):
@@ -76,6 +77,71 @@ class PackagedRuntimeTests(unittest.TestCase):
             db.execute("UPDATE settings SET value='9443' WHERE key='https_port'")
         _reject_configuration(self.state, rejected, active)
         self.assertEqual(read_listener(self.state), ("127.0.0.1", 9443))
+
+    def test_application_startup_does_not_migrate_during_recovery_or_another_startup(self):
+        from backup import MARKER, RestoreBusy, _worker_lock
+        with _worker_lock(self.state / "runtime-startup.lock"), self.assertRaises(RestoreBusy):
+            runtime_application(self.state)
+        self.assertFalse((self.state / "pkimaster.sqlite").exists())
+        (self.state / MARKER).write_text("{}", encoding="utf-8")
+        with self.assertRaises(RestoreBusy):
+            runtime_application(self.state)
+        self.assertFalse((self.state / "pkimaster.sqlite").exists())
+
+    def test_supervisor_stops_old_workers_before_installing_and_reloading_restore(self):
+        configuration = _Configuration("127.0.0.1", 8443, b"TLS")
+        events = []
+        children = [Mock(), Mock()]
+        for child in children:
+            child.poll.return_value = None
+        stopping = Mock()
+        stopping.is_set.side_effect = [False, False, True]
+        stopping.wait.return_value = False
+        def start(_):
+            child = children.pop(0)
+            events.append(("start", child))
+            return child
+        def apply(_):
+            events.append(("apply", None))
+            return True
+        def stop(child):
+            events.append(("stop", child))
+        with (patch("pkimaster_server.STATE_DIRECTORY", self.state),
+              patch("pkimaster_server.runtime_application"),
+              patch("pkimaster_server._configuration", return_value=configuration),
+              patch("pkimaster_server._remembered_configuration", return_value=None),
+              patch("pkimaster_server._remember_configuration"),
+              patch("pkimaster_server.signal.signal"),
+              patch("pkimaster_server.os.umask"),
+              patch("pkimaster_server.threading.Event", return_value=stopping),
+              patch("pkimaster_server._start_child", side_effect=start),
+              patch("pkimaster_server._stop_child", side_effect=stop),
+              patch("backup.apply_pending_restore", side_effect=apply),
+              patch("backup.restore_pending", side_effect=[False, True])):
+            supervise()
+        self.assertEqual([name for name, _ in events], ["apply", "start", "stop", "apply", "start", "stop"])
+        self.assertIs(events[1][1], events[2][1])
+        self.assertIs(events[4][1], events[5][1])
+        self.assertIsNot(events[1][1], events[4][1])
+
+    def test_supervisor_retries_busy_recovery_before_starting_application(self):
+        from backup import RestoreBusy
+        stopping = Mock()
+        stopping.is_set.return_value = True
+        with (patch("pkimaster_server.STATE_DIRECTORY", self.state),
+              patch("pkimaster_server.runtime_application") as application,
+              patch("pkimaster_server._configuration", return_value=_Configuration("127.0.0.1", 8443, b"TLS")),
+              patch("pkimaster_server._remembered_configuration", return_value=None),
+              patch("pkimaster_server.signal.signal"),
+              patch("pkimaster_server.os.umask"),
+              patch("pkimaster_server.threading.Event", return_value=stopping),
+              patch("pkimaster_server.time.sleep") as sleep,
+              patch("pkimaster_server._start_child") as start,
+              patch("backup.apply_pending_restore", side_effect=[RestoreBusy("busy"), True])):
+            supervise()
+        application.assert_called_once_with()
+        sleep.assert_called_once_with(0.5)
+        start.assert_not_called()
 
 
 if __name__ == "__main__":
