@@ -195,7 +195,7 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.before_request
     def protect_audit_integrity():
-        if request.method not in {"GET", "HEAD", "OPTIONS"} or request.endpoint in {"download_crl", "identity.oidc_callback"}:
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
             try:
                 verify_chain(get_db(), app.config["KEY_ENCRYPTION_SECRET"])
             except AuditIntegrityError:
