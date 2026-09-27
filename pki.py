@@ -43,18 +43,9 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def max_subordinate_depth(role: str) -> int:
-    try:
-        return {"root": 2, "intermediate": 1, "issuing": 0}[role]
-    except KeyError as exc:
-        raise ValueError("Unknown certificate authority role.") from exc
-
-
-def allowed_ca_path_length(role: str, issuer_role: str | None = None) -> int:
-    depth = max_subordinate_depth(role)
-    if issuer_role is None:
-        return depth
-    return min(depth, max(max_subordinate_depth(issuer_role) - 1, 0))
+def _validate_ca_role(role: str) -> None:
+    if role not in {"root", "intermediate", "issuing"}:
+        raise ValueError("Unknown certificate authority role.")
 
 
 def valid_parent_child_roles(parent_role: str, child_role: str) -> bool:
@@ -285,10 +276,11 @@ def create_ca_certificate(
     crl_url: str | None = None,
     signer: ExternalSigner | None = None,
     aia_url: str | None = None,
+    issuer_chain_pem: str = "",
 ) -> tuple[str, str, str, str, str]:
     subject = build_subject(common_name)
     _validate_validity_days(validity_days)
-    path_length = allowed_ca_path_length(role, issuer_role)
+    _validate_ca_role(role)
     now = utc_now()
     issuer = issuer_key = None
     if bool(issuer_certificate_pem) != bool(issuer_private_key_pem):
@@ -296,11 +288,11 @@ def create_ca_certificate(
     if issuer_certificate_pem and issuer_private_key_pem:
         if role == "root" or (issuer_role is not None and not valid_parent_child_roles(issuer_role, role)):
             raise ValueError("Invalid parent and child certificate authority roles.")
-        issuer, issuer_key, constraints = _load_issuer(issuer_certificate_pem, issuer_private_key_pem, now)
-        if constraints.path_length is not None:
-            if constraints.path_length < 1:
-                raise ValueError("Issuer path length does not permit subordinate certificate authorities.")
-            path_length = min(path_length, constraints.path_length - 1)
+        issuer, issuer_key, _ = _load_issuer(issuer_certificate_pem, issuer_private_key_pem, now)
+        parent_role = issuer_role or ("root" if issuer.subject == issuer.issuer else "intermediate")
+        if not valid_parent_child_roles(parent_role, role):
+            raise ValueError("Invalid parent and child certificate authority roles.")
+        _validate_ca_signing_chain(issuer, parent_role, issuer_chain_pem)
     elif role != "root" or issuer_role is not None:
         raise ValueError("Only a root authority may be self-signed.")
     not_before, not_after = _validity_window(now, validity_days, issuer)
@@ -319,7 +311,7 @@ def create_ca_certificate(
             authority_key_identifier_from_certificate(issuer) if issuer else
             x509.AuthorityKeyIdentifier.from_issuer_public_key(public_key), critical=False,
         )
-        .add_extension(x509.BasicConstraints(ca=True, path_length=path_length), critical=True)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
     )
     builder = _add_crl_distribution_point(builder, crl_url)
@@ -367,6 +359,7 @@ def _strict_pem_blocks(pem: str, label: str, maximum: int, *, allow_empty: bool 
 
 
 def _validate_ca_extensions(extensions: x509.Extensions, role: str) -> x509.BasicConstraints:
+    _validate_ca_role(role)
     # We do not implement policy/name-constraint processing; accepting these
     # extensions would allow later issuance outside an imported CA's scope.
     forbidden = {
@@ -383,10 +376,8 @@ def _validate_ca_extensions(extensions: x509.Extensions, role: str) -> x509.Basi
         usage = extensions.get_extension_for_class(x509.KeyUsage)
     except x509.ExtensionNotFound as exc:
         raise ValueError("CA certificates and requests require BasicConstraints and signing KeyUsage.") from exc
-    if not basic.critical or not basic.value.ca or basic.value.path_length is None:
-        raise ValueError("CA BasicConstraints must be critical, assert CA, and specify a bounded path length.")
-    if basic.value.path_length > max_subordinate_depth(role):
-        raise ValueError("CA path length exceeds the selected role's permitted depth.")
+    if not basic.critical or not basic.value.ca:
+        raise ValueError("CA BasicConstraints must be critical and assert CA.")
     flags = usage.value
     if (not usage.critical or not flags.key_cert_sign or not flags.crl_sign or flags.digital_signature
             or flags.content_commitment or flags.key_encipherment or flags.data_encipherment or flags.key_agreement):
@@ -434,7 +425,7 @@ def create_ca_request(common_name: str, role: str, *, signer: ExternalSigner | N
     builder = (
         x509.CertificateSigningRequestBuilder()
         .subject_name(subject)
-        .add_extension(x509.BasicConstraints(True, max_subordinate_depth(role)), critical=True)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
     )
     request = sign_builder(builder, private_key)
@@ -452,10 +443,11 @@ def sign_ca_request(
     crl_url: str | None = None,
     *,
     aia_url: str | None = None,
+    issuer_chain_pem: str = "",
 ) -> tuple[str, str, str, str]:
     """Sign a remote CA's public request; its private key is never transferred.
 
-    The supplied local issuer must already have an activated, validated chain.
+    The issuer's complete parent chain is required for a subordinate issuer.
     Requested extensions are validated but rebuilt under this server's policy.
     """
     if not valid_parent_child_roles(issuer_role, role):
@@ -471,17 +463,11 @@ def sign_ca_request(
         names = request.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         if len(names) != 1 or request.subject != build_subject(names[0].value):
             raise ValueError("CA requests must contain exactly the intended common-name subject.")
-        requested = _validate_ca_extensions(request.extensions, role)
+        _validate_ca_extensions(request.extensions, role)
         now = utc_now()
         _strict_pem_blocks(issuer_certificate_pem, "CERTIFICATE", 1)
         issuer, issuer_key, _ = _load_issuer(issuer_certificate_pem, issuer_private_key_pem, now)
-        constraints = _validate_exchange_certificate(issuer, issuer_role, now)
-        if issuer_role == "root":
-            _verify_exchange_link(issuer, issuer)
-        elif issuer.subject == issuer.issuer:
-            raise ValueError("An intermediate issuer must have a separate parent authority.")
-        if constraints.path_length < 1:
-            raise ValueError("Issuer path length does not permit subordinate certificate authorities.")
+        _validate_ca_signing_chain(issuer, issuer_role, issuer_chain_pem)
         if request.subject == issuer.subject or _exchange_public_bytes(request.public_key()) == _exchange_public_bytes(issuer.public_key()):
             raise ValueError("A remote CA must have a distinct subject and private key from its issuer.")
         not_before, not_after = _validity_window(now, validity_days, issuer)
@@ -495,7 +481,7 @@ def sign_ca_request(
             .not_valid_after(not_after)
             .add_extension(x509.SubjectKeyIdentifier.from_public_key(request.public_key()), critical=False)
             .add_extension(authority_key_identifier_from_certificate(issuer), critical=False)
-            .add_extension(x509.BasicConstraints(True, min(requested.path_length, constraints.path_length - 1)), critical=True)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
             .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
         )
         builder = _add_crl_distribution_point(builder, crl_url)
@@ -506,6 +492,45 @@ def sign_ca_request(
     except (InvalidSignature, UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType,
             x509.InvalidVersion, TypeError) as exc:
         raise ValueError("CA request or issuer has an invalid signature, key, or unsupported certificate structure.") from exc
+
+
+def _validate_ca_chain(certificate: x509.Certificate, parents: list[x509.Certificate], role: str) -> list[x509.Certificate]:
+    if ((role == "root" and parents) or (role != "root" and not parents)
+            or (role == "intermediate" and len(parents) != 1)):
+        raise ValueError("The parent chain does not match the intended CA hierarchy.")
+    chain = [certificate, *parents]
+    fingerprints = [item.fingerprint(hashes.SHA256()) for item in chain]
+    public_keys = [_exchange_public_bytes(item.public_key()) for item in chain]
+    if len(set(fingerprints)) != len(chain) or len(set(public_keys)) != len(chain):
+        raise ValueError("The CA chain contains duplicate certificates or reused authority keys.")
+    if len({item.subject for item in chain}) != len(chain):
+        raise ValueError("Every CA in the activation chain must have a distinct subject.")
+    now = utc_now()
+    constraints = []
+    for index, item in enumerate(chain):
+        item_role = role if index == 0 else ("root" if index == len(chain) - 1 else "intermediate")
+        constraints.append(_validate_exchange_certificate(item, item_role, now))
+    for index, (child, parent) in enumerate(zip(chain, chain[1:])):
+        _verify_exchange_link(child, parent)
+        # This CA will itself issue certificates, so count it among the CAs
+        # below each ancestor. An absent constraint imposes no limit.
+        parent_limit = constraints[index + 1].path_length
+        if parent_limit is not None and parent_limit < index + 1:
+            raise ValueError("An ancestor's path length does not permit this complete CA chain.")
+    root = chain[-1]
+    _verify_exchange_link(root, root)
+    return chain
+
+
+def _validate_ca_signing_chain(issuer: x509.Certificate, role: str, chain_pem: str) -> None:
+    """Check existing ancestor limits before adding a CA, without copying them."""
+    parents = [x509.load_pem_x509_certificate(block)
+               for block in _strict_pem_blocks(chain_pem, "CERTIFICATE", 2, allow_empty=role == "root")]
+    chain = _validate_ca_chain(issuer, parents, role)
+    for depth, certificate in enumerate(chain, start=1):
+        limit = certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length
+        if limit is not None and limit < depth:
+            raise ValueError("An issuer or ancestor path length does not permit another subordinate certificate authority.")
 
 
 def validate_ca_activation(
@@ -523,39 +548,18 @@ def validate_ca_activation(
     The returned canonical PEM contains parents only, immediate issuer first.
     """
     expected_subject = build_subject(common_name)
-    max_subordinate_depth(role)
+    _validate_ca_role(role)
     try:
         certificate = x509.load_pem_x509_certificate(_strict_pem_blocks(certificate_pem, "CERTIFICATE", 1)[0])
         parents = [x509.load_pem_x509_certificate(block)
                    for block in _strict_pem_blocks(chain_pem, "CERTIFICATE", 2, allow_empty=role == "root")]
-        if (role == "root" and parents) or (role == "intermediate" and len(parents) != 1):
-            raise ValueError("The parent chain does not match the intended CA hierarchy.")
         private_key = _load_private_key(private_key_pem)
         _validate_exchange_key(private_key.public_key())
         if certificate.subject != expected_subject:
             raise ValueError("The returned CA subject does not match the local certificate request.")
         if _exchange_public_bytes(certificate.public_key()) != _exchange_public_bytes(private_key.public_key()):
             raise ValueError("The returned CA public key does not match the local private key.")
-        chain = [certificate, *parents]
-        fingerprints = [item.fingerprint(hashes.SHA256()) for item in chain]
-        public_keys = [_exchange_public_bytes(item.public_key()) for item in chain]
-        if len(set(fingerprints)) != len(chain) or len(set(public_keys)) != len(chain):
-            raise ValueError("The CA chain contains duplicate certificates or reused authority keys.")
-        if len({item.subject for item in chain}) != len(chain):
-            raise ValueError("Every CA in the activation chain must have a distinct subject.")
-        now = utc_now()
-        constraints = []
-        for index, item in enumerate(chain):
-            item_role = role if index == 0 else ("root" if index == len(chain) - 1 else "intermediate")
-            constraints.append(_validate_exchange_certificate(item, item_role, now))
-        for index, (child, parent) in enumerate(zip(chain, chain[1:])):
-            _verify_exchange_link(child, parent)
-            if constraints[index].path_length >= constraints[index + 1].path_length:
-                raise ValueError("The subordinate CA's path length exceeds its parent's delegation.")
-            if constraints[index + 1].path_length < index + 1:
-                raise ValueError("An ancestor's path length does not permit this complete CA chain.")
-        root = chain[-1]
-        _verify_exchange_link(root, root)
+        _validate_ca_chain(certificate, parents, role)
         return "".join(serialize_certificate(parent) for parent in parents)
     except (InvalidSignature, UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType,
             x509.InvalidVersion, TypeError) as exc:

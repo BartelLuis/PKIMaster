@@ -154,7 +154,7 @@ class PKIMasterTestCase(unittest.TestCase):
         request = x509.load_pem_x509_csr(self.get("/authorities/1/csr").data)
         self.assertTrue(request.is_signature_valid)
         self.assertEqual(request.public_key().key_size, 3072)
-        self.assertEqual(request.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length, 0)
+        self.assertIsNone(request.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
         for path in ("/authorities/1/cert", "/authorities/1/chain", "/crl/1.crl"):
             with self.subTest(path=path):
                 self.assertEqual(self.get(path).status_code, 409)

@@ -73,11 +73,11 @@ Issue certificates through the server's single CA, using certificate requests, c
 
 ## Install with APT
 
-Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.1-1**, download [`pkimaster_0.2.1-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.1-1/pkimaster_0.2.1-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
+Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.2-1**, download [`pkimaster_0.2.2-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.2-1/pkimaster_0.2.2-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.2.1-1_all.deb
+sudo apt install ./pkimaster_0.2.2-1_all.deb
 ```
 
 Release assets also include `SHA256SUMS` and build metadata.
@@ -88,7 +88,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.2.1-1_all.deb
+sudo apt install ./dist/pkimaster_0.2.2-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. A signed public APT repository is not published by this project yet; `apt install ./…deb` resolves dependencies using your configured Debian repositories.
@@ -121,13 +121,15 @@ The APT package includes a publication timer that checks every minute. Revocatio
 
 ## Certificate management
 
-- One local Root, Intermediate, or Issuing CA per dedicated server, with CSR-based external signing and enforced path-length constraints.
+- One local Root, Intermediate, or Issuing CA per dedicated server, with CSR-based external signing. New CA certificates and CSRs omit `pathLenConstraint`.
 - TLS server, TLS client, or combined certificate profiles; DNS and IP SANs, including validated IDNA names.
 - Sign an existing PEM CSR to keep its private key outside the service, or generate an RSA4096 key. CSR signatures and key strength are checked, and arbitrary requested extensions are not copied.
 - Issued validity never exceeds issuer validity or the configured leaf lifetime limit. Expired, revoked, or not-yet-valid ancestors block issuance.
 - Certificate and subordinate CA revocation with reasons, signed DER CRLs, monotonically increasing CRL numbers, and cache invalidation on revocation.
 - Disabling the local CA stops its signing. Revoke a subordinate on its parent server and distribute the new CRL. Remove a distrusted root from relying-party trust stores. Disconnected servers learn parent revocation only when updated CRLs are imported.
 - Certificate and chain downloads, searchable paginated inventory, and expiry counts. Generated end-entity key exports are disabled by default, restricted to administrators when enabled, and audited. CA key exports are always forbidden.
+
+Path-length limits already present in parent certificates are enforced against the actual CA chain. Existing signed certificates retain their limits; removing them requires reissuance.
 
 Revocation is permanent in this version, including the `certificate_hold` reason. Relying parties must be configured to check CRLs; publication alone does not make clients enforce revocation. CRLs are refreshed on request and by the enabled SFTP publication timer, and cannot be signed by expired CAs. Publication status confirms the SFTP transfer; monitor HTTP(S) retrieval and CRL freshness independently.
 

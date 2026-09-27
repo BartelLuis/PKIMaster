@@ -21,7 +21,8 @@ class CAExchangeTests(unittest.TestCase):
             cls.intermediate_csr, cls.intermediate_key_pem = pki.create_ca_request("Exchange Policy", "intermediate")
             cls.intermediate = pki.sign_ca_request(cls.intermediate_csr, "intermediate", 90, "root", cls.root[0], cls.root[1])
             cls.issuing_csr, cls.issuing_key_pem = pki.create_ca_request("Exchange Issuing", "issuing")
-            cls.issuing = pki.sign_ca_request(cls.issuing_csr, "issuing", 10, "intermediate", cls.intermediate[0], cls.intermediate_key_pem)
+            cls.issuing = pki.sign_ca_request(cls.issuing_csr, "issuing", 10, "intermediate", cls.intermediate[0], cls.intermediate_key_pem,
+                                            issuer_chain_pem=cls.root[0])
         cls.root_certificate = x509.load_pem_x509_certificate(cls.root[0].encode())
         cls.root_key = serialization.load_pem_private_key(cls.root[1].encode(), None)
         cls.intermediate_key = serialization.load_pem_private_key(cls.intermediate_key_pem.encode(), None)
@@ -73,7 +74,7 @@ class CAExchangeTests(unittest.TestCase):
             common_name, "issuing",
         )
 
-    def test_generated_request_has_proof_of_possession_and_role_constraints(self):
+    def test_generated_request_has_proof_of_possession_and_ca_capabilities(self):
         request = x509.load_pem_x509_csr(self.intermediate_csr.encode())
         self.assertTrue(request.is_signature_valid)
         self.assertEqual(request.public_key().key_size, 3072)
@@ -82,13 +83,24 @@ class CAExchangeTests(unittest.TestCase):
         basic = request.extensions.get_extension_for_class(x509.BasicConstraints)
         self.assertTrue(basic.critical)
         self.assertTrue(basic.value.ca)
-        self.assertEqual(basic.value.path_length, 1)
+        self.assertIsNone(basic.value.path_length)
         usage = request.extensions.get_extension_for_class(x509.KeyUsage)
         self.assertTrue(usage.critical)
         self.assertTrue(usage.value.key_cert_sign and usage.value.crl_sign)
         for role in ("root", "unknown"):
             with self.subTest(role=role), self.assertRaises(ValueError):
                 pki.create_ca_request("Invalid", role)
+
+    def test_generated_ca_certificates_and_requests_omit_path_length(self):
+        for role, pem in (("root", self.root[0]), ("intermediate", self.intermediate[0]), ("issuing", self.issuing[0])):
+            with self.subTest(role=role):
+                basic = x509.load_pem_x509_certificate(pem.encode()).extensions.get_extension_for_class(x509.BasicConstraints)
+                self.assertTrue(basic.critical)
+                self.assertTrue(basic.value.ca)
+                self.assertIsNone(basic.value.path_length)
+        for pem in (self.intermediate_csr, self.issuing_csr):
+            basic = x509.load_pem_x509_csr(pem.encode()).extensions.get_extension_for_class(x509.BasicConstraints)
+            self.assertIsNone(basic.value.path_length)
 
     def test_parent_signing_uses_csr_key_without_generating_child_private_key(self):
         with patch("pki.generate_private_key", side_effect=AssertionError("Parent must not generate the remote key")):
@@ -157,15 +169,40 @@ class CAExchangeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SHA-256"):
             pki.issue_end_entity_certificate(*arguments, csr_pem=weak_hash_csr, minimum_rsa_bits=3072)
 
-    def test_request_cannot_escalate_role_or_omit_ca_capabilities(self):
+    def test_request_cannot_omit_ca_capabilities(self):
         options = (
-            {"path_length": 1}, {"path_length": None}, {"ca": False}, {"basic_critical": False},
+            {"ca": False}, {"basic_critical": False},
             {"include_usage": False},
             {"usage": x509.KeyUsage(True, False, False, False, False, True, True, False, False)},
         )
         for kwargs in options:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 pki.sign_ca_request(self.request_pem(**kwargs), "issuing", 5, "root", self.root[0], self.root[1])
+
+    def test_external_requests_with_or_without_path_length_are_signed_without_one(self):
+        for path_length in (None, 0, 1, 10):
+            with self.subTest(path_length=path_length):
+                signed = pki.sign_ca_request(self.request_pem(path_length=path_length), "issuing", 5,
+                                             "root", self.root[0], self.root[1])
+                certificate = x509.load_pem_x509_certificate(signed[0].encode())
+                certificate.verify_directly_issued_by(self.root_certificate)
+                self.assertIsNone(certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
+
+    def test_activation_accepts_external_ca_without_role_based_path_length(self):
+        for path_length in (None, 0, 1, 10):
+            with self.subTest(path_length=path_length):
+                certificate = self.certificate_pem(path_length=path_length)
+                self.assertEqual(self.activate_issuing(certificate=certificate, chain=self.root[0]), self.root[0])
+
+    def test_activation_accepts_child_constraint_above_parent_when_chain_fits(self):
+        root = self.certificate_pem(key=self.root_key, subject=self.root_certificate.subject,
+                                   issuer=self.root_certificate.subject, path_length=1,
+                                   start=self.root_certificate.not_valid_before_utc,
+                                   end=self.root_certificate.not_valid_after_utc)
+        for path_length in (None, 1, 10):
+            with self.subTest(path_length=path_length):
+                certificate = self.certificate_pem(path_length=path_length)
+                self.assertEqual(self.activate_issuing(certificate=certificate, chain=root), root)
 
     def test_csr_subject_must_match_supported_cn_only_identity(self):
         subjects = (
@@ -210,12 +247,24 @@ class CAExchangeTests(unittest.TestCase):
                 pki.sign_ca_request(self.issuing_csr, role, 5, issuer_role, self.root[0], self.root[1])
         constrained = self.certificate_pem(key=self.intermediate_key, subject=pki.build_subject("Constrained Policy"), path_length=0)
         with self.assertRaisesRegex(ValueError, "path length"):
-            pki.sign_ca_request(self.issuing_csr, "issuing", 5, "intermediate", constrained, self.intermediate_key_pem)
-        # Root path length one may authorize an intermediate only with path length zero.
+            pki.sign_ca_request(self.issuing_csr, "issuing", 5, "intermediate", constrained, self.intermediate_key_pem,
+                                issuer_chain_pem=self.root[0])
+        # The root's limit remains effective even though the child has no path-length constraint.
         root = self.certificate_pem(key=self.root_key, subject=self.root_certificate.subject,
                                     issuer=self.root_certificate.subject, path_length=1)
         signed = pki.sign_ca_request(self.intermediate_csr, "intermediate", 9, "root", root, self.root[1])
-        self.assertEqual(x509.load_pem_x509_certificate(signed[0].encode()).extensions.get_extension_for_class(x509.BasicConstraints).value.path_length, 0)
+        self.assertIsNone(x509.load_pem_x509_certificate(signed[0].encode()).extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
+        self.assertEqual(pki.validate_ca_activation(signed[0], root, self.intermediate_key_pem,
+                                                   "Exchange Policy", "intermediate"), root)
+        with self.assertRaisesRegex(ValueError, "path length"):
+            pki.sign_ca_request(self.issuing_csr, "issuing", 5, "intermediate", signed[0], self.intermediate_key_pem,
+                                issuer_chain_pem=root)
+
+    def test_intermediate_signing_requires_its_complete_validated_parent_chain(self):
+        for chain in ("", self.intermediate[0], self.root[0] + self.root[0], "not PEM"):
+            with self.subTest(chain=chain[:30]), self.assertRaises(ValueError):
+                pki.sign_ca_request(self.issuing_csr, "issuing", 5, "intermediate", self.intermediate[0],
+                                    self.intermediate_key_pem, issuer_chain_pem=chain)
 
     def test_issuer_key_mismatch_and_reused_child_identity_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "do not match"):
@@ -224,7 +273,7 @@ class CAExchangeTests(unittest.TestCase):
             with self.subTest(request=request[:30]), self.assertRaisesRegex(ValueError, "distinct"):
                 pki.sign_ca_request(request, "issuing", 5, "root", self.root[0], self.root[1])
 
-    def test_activation_rejects_wrong_key_subject_and_ca_role(self):
+    def test_activation_rejects_wrong_key_subject_and_self_signed_subordinate(self):
         for arguments in ({"key": self.intermediate_key_pem}, {"common_name": "Wrong Issuing"}):
             with self.subTest(arguments=arguments.keys()), self.assertRaises(ValueError):
                 self.activate_issuing(**arguments)
@@ -235,8 +284,8 @@ class CAExchangeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "subject"):
             self.activate_issuing(certificate=malformed, chain=self.root[0])
         with self.assertRaises(ValueError):
-            self.activate_issuing(certificate=self.intermediate[0], key=self.intermediate_key_pem,
-                                  common_name="Exchange Policy", chain=self.root[0])
+            self.activate_issuing(certificate=self.root[0], key=self.root[1],
+                                  common_name="Exchange Root", chain="")
 
     def test_activation_rejects_missing_unordered_duplicate_or_unrelated_parents(self):
         for chain in ("", self.intermediate[0], self.root[0], self.root[0] + self.intermediate[0],
@@ -271,7 +320,7 @@ class CAExchangeTests(unittest.TestCase):
                 self.activate_issuing(certificate=self.certificate_pem(**options), chain=self.root[0])
 
     def test_activation_rejects_non_ca_or_multipurpose_key_usage(self):
-        for options in ({"ca": False}, {"basic_critical": False}, {"path_length": None},
+        for options in ({"ca": False}, {"basic_critical": False},
                         {"usage": x509.KeyUsage(True, False, True, False, False, True, True, False, False)}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.activate_issuing(certificate=self.certificate_pem(**options), chain=self.root[0])

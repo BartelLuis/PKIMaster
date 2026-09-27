@@ -1,3 +1,11 @@
+pkimaster (0.2.2-1) trixie; urgency=medium
+
+  * Omit automatic pathLenConstraint from new CA certificates and CSRs.
+  * Accept external CA certificates without a path-length limit.
+  * Preserve existing ancestor constraints during signing and activation.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 19:41:07 +0200
+
 pkimaster (0.2.1-1) trixie; urgency=medium
 
   * Add local QR codes and complete setup URIs for SHA-256 TOTP enrollment.

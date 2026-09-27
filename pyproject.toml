@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pkimaster"
-version = "0.2.1"
+version = "0.2.2"
 description = "One CA per server: web-managed private PKI with MFA, independent CA approval and Debian APT packaging."
 readme = "README.md"
 requires-python = ">=3.11"

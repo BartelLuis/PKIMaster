@@ -415,7 +415,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError(authority_block_reason(authority))
             pem, serial, start, end = sign_ca_request(pending["csr_pem"], pending["role"], pending["validity_days"],
                 authority["role"], authority["certificate_pem"], authority_signing_key(authority),
-                crl_url=crl_distribution_url(authority["id"]), aia_url=issuer_certificate_url(authority["id"]))
+                crl_url=crl_distribution_url(authority["id"]), aia_url=issuer_certificate_url(authority["id"]),
+                issuer_chain_pem=authority["parent_chain_pem"])
             result = db.execute("INSERT INTO issued_authorities (authority_id, common_name, role, certificate_pem, serial_number, not_before, not_after) VALUES (?,?,?,?,?,?,?)",
                 (authority["id"], pending["common_name"], pending["role"], pem, serial, start, end))
             db.execute("UPDATE ca_requests SET status='approved', reviewed_by=?, reviewed_at=?, issued_id=? WHERE id=?",

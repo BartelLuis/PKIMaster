@@ -14,6 +14,7 @@ from cryptography.x509.oid import NameOID
 
 from app import create_app, get_db
 from mfa_helpers import complete_mfa
+from pki import create_ca_certificate
 
 
 class Node:
@@ -105,6 +106,8 @@ class DistributedCATests(unittest.TestCase):
         self.assertEqual(len(chain), 4)
         for child, parent in zip(chain, chain[1:]):
             child.verify_directly_issued_by(parent)
+        for certificate in chain[1:]:
+            self.assertIsNone(certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
         for node in (self.root, intermediate, self.issuing):
             self.assertEqual(len(node.records("authorities")), 1)
             with node.app.app_context():
@@ -112,6 +115,42 @@ class DistributedCATests(unittest.TestCase):
                 self.assertNotIn("private_key_pem", columns)
             self.assertEqual(node.get("/authorities/1/key").status_code, 403)
         self.assertEqual(self.issuing.records("certificates")[0]["private_key_pem"], "")
+
+    def test_subordinate_approval_respects_bounded_ancestor_of_unbounded_issuer(self):
+        def create_bounded_root(**kwargs):
+            generated = create_ca_certificate(**kwargs)
+            original = x509.load_pem_x509_certificate(generated[0].encode())
+            key = serialization.load_pem_private_key(generated[1].encode(), password=None)
+            builder = (x509.CertificateBuilder()
+                .subject_name(original.subject)
+                .issuer_name(original.issuer)
+                .public_key(original.public_key())
+                .serial_number(original.serial_number)
+                .not_valid_before(original.not_valid_before_utc)
+                .not_valid_after(original.not_valid_after_utc))
+            for extension in original.extensions:
+                value = x509.BasicConstraints(ca=True, path_length=1) if isinstance(extension.value, x509.BasicConstraints) else extension.value
+                builder = builder.add_extension(value, critical=extension.critical)
+            certificate = builder.sign(key, hashes.SHA256())
+            return certificate.public_bytes(serialization.Encoding.PEM).decode(), *generated[1:]
+
+        with patch("app.create_ca_certificate", side_effect=create_bounded_root):
+            root = Node(self, "root")
+        root.add_reviewer()
+        intermediate = Node(self, "intermediate")
+        intermediate.add_reviewer()
+        root.activate_child(intermediate)
+        issuer = x509.load_pem_x509_certificate(intermediate.get("/authorities/1/cert").data)
+        self.assertIsNone(issuer.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
+        intermediate.request_child(self.issuing)
+        pending = intermediate.records("ca_requests")[0]
+        self.assertEqual(pending["status"], "pending")
+
+        response = intermediate.post("/ca/requests/1/approve", client=intermediate.reviewer)
+
+        self.assertIn(b"path length", response.data)
+        self.assertEqual(intermediate.records("issued_authorities"), [])
+        self.assertEqual(intermediate.records("ca_requests"), [pending])
 
     def test_parent_crl_bundle_with_blank_lines_is_accepted_and_canonicalized(self):
         intermediate = Node(self, "intermediate")

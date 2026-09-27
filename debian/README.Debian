@@ -2,7 +2,7 @@ PKIMaster for Debian 13
 ======================
 
 Install the package with:
-  sudo apt install ./pkimaster_0.2.1-1_all.deb
+  sudo apt install ./pkimaster_0.2.2-1_all.deb
 
 Open https://127.0.0.1:8443/setup on the server, or forward the console from
 your workstation:
