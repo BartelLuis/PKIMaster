@@ -35,6 +35,29 @@ available for their remaining lifetimes. Enabling SFTP requires distinct public
 CRL and issuer-certificate URLs. The AIA entry identifies the issuer certificate;
 it does not configure an OCSP service.
 
+## Replacing a revoked local CA
+
+After revoking the local CA, initialize its replacement from the CA console.
+The retired CA, its issued certificates, keys, and CRLs remain stored, and its
+existing `/crl/<authority-id>.crl` and `/aia/<authority-id>.cer` endpoints remain
+available. The replacement receives a different authority ID and its own CRL.
+
+Initialization disables automatic SFTP publication, clears the public URL and
+remote directory fields, and resets the publication status for the new CA.
+Configure different CRL and AIA URLs and a different SFTP directory or server
+before enabling publication for the replacement. The most recently configured
+locations of each retired CA are reserved to prevent replacement artifacts from
+overwriting them. A replacement can only be initialized after any active upload
+has finished; retry initialization if publication is in progress.
+
+Keep every URL embedded in previously issued certificates available, including
+earlier locations used before changing publication settings. Existing remote
+files are left in place. After replacement, the automatic worker only publishes
+the new CA; arrange continued delivery and renewal of the retired CA's CRL where
+needed, using its retained local CRL endpoint and signing provider. Changing the
+CA or its publication settings does not update trust stores or existing
+certificates on relying parties.
+
 ## Connection fields
 
 | Field | Meaning |

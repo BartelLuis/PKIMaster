@@ -2,10 +2,10 @@
 {% block content %}
 <div class="page-heading">
   <div><span class="eyebrow">Certificate operations</span><h1>Certificate inventory</h1><p>Manage this server's authority, certificate lifecycle, and trust relationships.</p></div>
-  <span class="pill">One CA per server</span>
+  <span class="pill">One current CA per server</span>
 </div>
 <div class="grid stats-grid">
-  <section class="card stat"><span class="stat-label">Local CA</span><span class="stat-icon">{{ icon('shield') }}</span><strong>{{ authorities|length }} / 1</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if block_reason or not authority else '' }}"></span>{{ 'Needs attention' if block_reason else ('Authority initialized' if authority else 'Ready to initialize') }}</span></section>
+  <section class="card stat"><span class="stat-label">Local CA</span><span class="stat-icon">{{ icon('shield') }}</span><strong>{{ 1 if authority else 0 }} / 1</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if block_reason or not authority else '' }}"></span>{{ 'Needs attention' if block_reason else ('Authority initialized' if authority else 'Ready to initialize') }}</span></section>
   <section class="card stat"><span class="stat-label">Certificates</span><span class="stat-icon">{{ icon('audit') }}</span><strong>{{ counts['total'] }}</strong><span class="stat-caption">End-entity certificates issued</span></section>
   <section class="card stat"><span class="stat-label">Expiring in 30 days</span><span class="stat-icon">{{ icon('lock') }}</span><strong>{{ counts['expiring'] }}</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if counts['expiring'] else 'neutral' }}"></span>{{ 'Plan certificate renewals' if counts['expiring'] else 'No upcoming expirations' }}</span></section>
   <section class="card stat"><span class="stat-label">Revoked / expired</span><span class="stat-icon">{{ icon('grid') }}</span><strong>{{ counts['revoked'] }} / {{ counts['expired'] }}</strong><span class="stat-caption">Certificate lifecycle status</span></section>
@@ -13,7 +13,7 @@
 {% include "ca_console.html" %}
 {% if can_manage('admin', 'operator') and authority and authority['role'] == 'issuing' %}
 <section class="card">
-  <div class="section-heading"><div><h2>Issue certificate</h2><p>Signing authority: <strong>{{ authority['name'] }}</strong>. All issuance uses this server's single CA.</p></div><span class="pill">End-entity issuance</span></div>
+  <div class="section-heading"><div><h2>Issue certificate</h2><p>Signing authority: <strong>{{ authority['name'] }}</strong>. New certificates use this server's current CA.</p></div><span class="pill">End-entity issuance</span></div>
   <form method="post" action="{{ url_for('create_certificate') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="authority_id" value="{{ authority['id'] }}">

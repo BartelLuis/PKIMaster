@@ -51,7 +51,7 @@
         {% endif %}
       </nav>
       <div class="sidebar-footer">
-        <div class="sidebar-assurance">{{ icon('shield') }}<p>One server. One CA.<small>Separate keys for every trust tier.</small></p></div>
+        <div class="sidebar-assurance">{{ icon('shield') }}<p>One current CA per server.<small>Separate keys for every trust tier.</small></p></div>
         <div class="account-summary"><span class="avatar" aria-hidden="true">{{ current_user['username'][:1]|upper }}</span><div><strong>{{ current_user['username'] }}</strong><small>{{ current_user['role'] }}</small></div></div>
         <div class="account-actions">
           {% if not current_user['auth_source'] or current_user['auth_source'] == 'local' %}<a href="{{ url_for('enterprise.password') }}">Change password</a>{% endif %}
@@ -65,7 +65,7 @@
         {% if key_backend_label is defined %}<span class="environment-badge">{{ icon('key') }}{{ key_backend_label }}</span>{% endif %}
       </header>
     {% else %}
-    <div class="auth-brand"><a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">{{ icon('shield') }}</span><span>PKIMaster<small>Certificate operations</small></span></a><span class="auth-brand-note">One server. One certificate authority.</span></div>
+    <div class="auth-brand"><a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">{{ icon('shield') }}</span><span>PKIMaster<small>Certificate operations</small></span></a><span class="auth-brand-note">One current certificate authority per server.</span></div>
     <div class="auth-shell">
     {% endif %}
       <main id="main-content" tabindex="-1">

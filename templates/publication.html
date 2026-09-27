@@ -2,6 +2,7 @@
 {% block content %}
 <section class="card"><p class="eyebrow">Public trust information</p><h2>CRL &amp; AIA publication</h2>
 <p class="muted">Publish this server's signed revocation list and public CA certificates to a separate distribution server. Clients retrieve them over HTTP(S); PKIMaster uploads them over SFTP.</p>
+<p class="muted">After initializing a replacement CA, configure separate publication URLs and a separate SFTP directory before enabling uploads. Keep the archived CA's CRL and AIA URLs and files available for its existing certificates.</p>
 <div class="grid">
 <div class="stat"><span>Automatic publication</span><strong>{{ 'Enabled' if provider.enabled else 'Disabled' }}</strong></div>
 <div class="stat"><span>Published CRL</span><strong>{{ state.last_published_crl_number or 'Not yet' }}</strong></div>

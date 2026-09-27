@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -50,9 +51,33 @@ def queue_publication(db):
     db.execute("UPDATE publication_state SET generation=generation+1, next_attempt_at=0 WHERE id=1")
 
 
+def reset_for_new_authority(db, authority_id):
+    """Retire the old destination in the caller's locked creation transaction."""
+    if not db.in_transaction:
+        raise RuntimeError("Publication reset requires a transaction.")
+    previous = db.execute("SELECT id FROM authorities WHERE id<>? ORDER BY id DESC LIMIT 1", (authority_id,)).fetchone()
+    if previous is None:
+        return
+    config = configuration()
+    retired = list(config.get("retired_targets", []))
+    retired.append({"authority_id": previous["id"],
+                    "crl_url": public_url("crl", previous["id"]) or "",
+                    "aia_url": public_url("aia", previous["id"]) or "",
+                    **{field: config.get(field, "") for field in ("host", "port", "directory")}})
+    _save({**config, "authority_id": authority_id, "retired_targets": retired,
+           "enabled": False, "crl_url": "", "aia_url": "", "directory": ""})
+    db.execute("""UPDATE publication_state SET published_generation=0, last_attempt=NULL,
+        last_success=NULL, last_error='', failures=0, next_attempt_at=0,
+        last_published_crl_number=NULL WHERE id=1""")
+    _audit("publication.retired", previous["id"], f"replacement_authority={authority_id}; automatic publication disabled")
+
+
 def public_url(kind, authority_id):
     config = configuration()
-    if config[kind + "_url"]:
+    if config.get("authority_id", authority_id) != authority_id:
+        config = next((target for target in reversed(config.get("retired_targets", []))
+                       if target["authority_id"] == authority_id), {})
+    if config.get(kind + "_url"):
         return config[kind + "_url"]
     base = get_setting("public_base_url", "").rstrip("/")
     suffix = f"crl/{authority_id}.crl" if kind == "crl" else f"aia/{authority_id}.cer"
@@ -150,7 +175,7 @@ def _record_failure(db, authority_id, message):
 
 def run_publication_cycle():
     """One timer/manual attempt; content changes during upload remain pending."""
-    from app import get_db, build_ca_chain
+    from app import get_db, build_ca_chain, current_authority
     from audit_integrity import verify_chain
     db = get_db()
     with publication_lock() as acquired:
@@ -165,7 +190,10 @@ def run_publication_cycle():
         if state["next_attempt_at"] > time.time():
             db.rollback()
             return {"status": "waiting"}
-        authority = db.execute("SELECT * FROM authorities LIMIT 1").fetchone()
+        authority = current_authority(db)
+        if authority is None:
+            # Continue serving a retired CA until its replacement is initialized.
+            authority = db.execute("SELECT * FROM authorities ORDER BY id DESC LIMIT 1").fetchone()
         if not authority or authority["state"] != "active":
             db.rollback()
             return {"status": "waiting"}
@@ -201,6 +229,22 @@ def run_publication_cycle():
         return {"status": "published", "generation": generation, "crl_number": number}
 
 
+def _url_location(value):
+    parsed = urlsplit(value)
+    return (parsed.scheme.lower(), parsed.hostname.lower(),
+            parsed.port or (443 if parsed.scheme.lower() == "https" else 80), unquote(parsed.path or "/"))
+
+
+def _validate_retired_targets(values, *, destination=False):
+    for retired in values.get("retired_targets", []):
+        old_urls = {_url_location(retired[field]) for field in ("crl_url", "aia_url") if retired.get(field)}
+        if any(values.get(field) and _url_location(values[field]) in old_urls for field in ("crl_url", "aia_url")):
+            raise ValueError("Use new CRL and AIA URLs for the replacement CA. Retired CA URLs must remain available for its certificates.")
+        if (destination and retired.get("host") and retired.get("directory")
+                and all(str(values.get(field, "")) == str(retired.get(field, "")) for field in ("host", "port", "directory"))):
+            raise ValueError("Use a different SFTP directory or server for the replacement CA to preserve the retired CA's public files.")
+
+
 def _form_configuration(saved):
     values = dict(saved)
     values["enabled"] = request.form.get("enabled") == "on"
@@ -210,6 +254,7 @@ def _form_configuration(saved):
             validate_publication_url(values[field], label="CRL" if field == "crl_url" else "AIA")
             if "?" in values[field]:
                 raise ValueError("Public artifact URLs must not contain query parameters.")
+    _validate_retired_targets(values)
     # Disabling must remain possible even if credentials are no longer usable.
     if not values["enabled"]:
         return values
@@ -232,13 +277,15 @@ def _form_configuration(saved):
         values["private_key_pem"] = values["private_key_passphrase"] = ""
     else:
         values["password"] = ""
-    return {**values, **validate_transport(values)}
+    values = {**values, **validate_transport(values)}
+    _validate_retired_targets(values, destination=True)
+    return values
 
 
 @publication.route("/settings/publication", methods=["GET", "POST"])
 @require_roles("admin")
 def settings():
-    from app import get_db
+    from app import get_db, current_authority
     db = get_db()
     status = 200
     if request.method == "POST":
@@ -264,8 +311,10 @@ def settings():
     config = configuration()
     state = dict(db.execute("SELECT * FROM publication_state WHERE id=1").fetchone())
     state["next_attempt"] = datetime.fromtimestamp(state["next_attempt_at"], UTC).isoformat() if state["next_attempt_at"] else None
-    authority = db.execute("SELECT * FROM authorities LIMIT 1").fetchone()
-    cached = db.execute("SELECT number,next_update FROM crls LIMIT 1").fetchone()
+    authority = current_authority(db)
+    if authority is None:
+        authority = db.execute("SELECT * FROM authorities ORDER BY id DESC LIMIT 1").fetchone()
+    cached = db.execute("SELECT number,next_update FROM crls WHERE authority_id=?", (authority["id"],)).fetchone() if authority else None
     return render_template("publication.html", title="CRL & AIA publication", provider={key: value for key, value in config.items() if key not in SECRET_FIELDS},
                            has_password=bool(config.get("password")), has_key=bool(config.get("private_key_pem")),
                            state=state, authority=authority, cached=cached), status

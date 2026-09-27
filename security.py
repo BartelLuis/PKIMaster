@@ -13,7 +13,7 @@ security = Blueprint("security", __name__)
 @security.get("/security")
 @require_roles("admin", "operator", "auditor")
 def overview():
-    from app import get_db, authority_block_reason
+    from app import get_db, authority_block_reason, current_authority
     db = get_db()
     # Read head and entries in one snapshot while other workers append.
     db.execute("BEGIN")
@@ -22,7 +22,7 @@ def overview():
         checkpoint = verify_chain(db, current_app.config["KEY_ENCRYPTION_SECRET"])
     except AuditIntegrityError as exc:
         checkpoint, error = {}, str(exc)
-    authority = db.execute("SELECT * FROM authorities LIMIT 1").fetchone()
+    authority = current_authority(db)
     legacy = db.execute("SELECT legacy_count FROM audit_state WHERE id=1").fetchone()[0]
     admins = db.execute("SELECT COUNT(*) FROM users WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL").fetchone()[0]
     return render_template("security.html", title="Security posture", checkpoint=checkpoint, integrity_error=error,

@@ -6,7 +6,7 @@ The working reference for the requested BSI scope is [BSI TR-03145, Secure Certi
 
 ## Deployment architecture
 
-**One dedicated server or VM runs one PKIMaster CA.** Install one APT service using `/var/lib/pkimaster` on each server. A Root, an optional Intermediate, and each Issuing CA have separate hosts, state directories, identities and keys. Do not colocate multiple installations or containers on one server. The application enforces one local CA in its database; it cannot police an operating-system administrator starting a separate installation elsewhere on the host.
+**One dedicated server or VM runs one current PKIMaster CA.** Install one APT service using `/var/lib/pkimaster` on each server. A Root, an optional Intermediate, and each Issuing CA have separate hosts, state directories, identities and keys. Do not colocate multiple installations or containers on one server. The application enforces one non-revoked local CA in its database and retains revoked CAs as history; it cannot police an operating-system administrator starting a separate installation elsewhere on the host.
 
 ```mermaid
 flowchart LR
@@ -28,7 +28,7 @@ This is a development mapping, not a clause-by-clause attestation. The control d
 
 | Area | Implemented behavior | Evidence / remaining boundary |
 | --- | --- | --- |
-| CA separation (project requirement) | SQLite constraints and transactions prevent creating a second local CA, including concurrently. CA identity cannot be deleted or replaced through the application. | `tests/test_app.py`; physical host separation remains a deployment responsibility. |
+| CA separation (project requirement) | SQLite constraints and transactions prevent creating a second non-revoked local CA, including concurrently. After revocation, a new CA can be initialized while previous identities, certificates and history remain archived. Revoked identities cannot be reactivated or deleted. | `tests/test_app.py`, `tests/test_ca_reinitialization.py`; physical host separation remains a deployment responsibility. |
 | CA key ownership | Subordinates generate a dedicated RSA4096 key and CSR in the selected software/PKCS#11/Azure provider. Only the signed certificate and public parent chain return to the subordinate. Provider version/object and public-key fingerprint are pinned; external signatures are locally verified. | `tests/test_ca_exchange.py`, `tests/test_distributed_ca.py`, `tests/test_key_backends.py`, `tests/test_key_storage.py`; approved physical protection and key ceremonies remain operational responsibilities. |
 | Authentication and roles | All accounts require a verified local/LDAP/OIDC first factor plus application TOTP. Secrets are encrypted, successful counters are consumed transactionally, attempts are persistently throttled, and password reset does not remove MFA. First-factor-only and pre-MFA legacy sessions cannot enter the PKI. | `tests/test_mfa.py`, `tests/test_enterprise.py`, `tests/test_identity.py`; no phishing-resistant application factor or automated MFA recovery. |
 | Independent CA approval | A subordinate CSR is recorded immutably; a different administrator account must approve before the signature is produced. Self-approval and repeated approval are rejected. | `tests/test_distributed_ca.py`; distinct human identity and personnel vetting require operating procedures. Root creation, activation, settings, revocation and leaf issuance do not yet require dual approval. |
@@ -62,7 +62,7 @@ TR-03145-1 section 6.7 addresses role management and separation of responsibilit
 
 ## Existing installations and migration
 
-An existing database with more than one local CA is refused at startup. This check **does not delete keys, certificates or audit records**, and does not choose a CA to keep. There is no automatic multi-CA migration in this version.
+An existing database with more than one non-revoked local CA is refused at startup. Revoked local CAs can remain as archived history alongside one current CA. This check **does not delete keys, certificates or audit records**, and does not choose a CA to keep. There is no automatic migration of multiple non-revoked CAs in this version.
 
 Upgrades preserve existing signed CA certificates, including any `pathLenConstraint`. Removing a signed certificate's limit requires reissuance; an application upgrade cannot alter it.
 

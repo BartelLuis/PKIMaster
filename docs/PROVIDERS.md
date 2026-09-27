@@ -1,6 +1,6 @@
 # Identity and key providers
 
-All PKIMaster settings are entered in the authenticated web console. Directory, identity-provider and cloud resources must exist in their respective operating environments. Keep at least two independently assigned administrators for subordinate CA approval. Each server still runs one CA.
+All PKIMaster settings are entered in the authenticated web console. Directory, identity-provider and cloud resources must exist in their respective operating environments. Keep at least two independently assigned administrators for subordinate CA approval. Each server runs one current CA and retains revoked CAs as history.
 
 ## Local, LDAP and OIDC authentication
 
@@ -33,6 +33,8 @@ In **Key storage**, select Azure, enter the vault URL, tenant ID, application ID
 Client secrets and token PINs are stored encrypted. After CA initialization, only credentials can be updated; the application verifies them by signing with the same pinned key. CA private-key download remains forbidden. Provider signatures are verified locally before accepting certificates, CSRs or CRLs. New RSA signatures use SHA-256 RSA-PSS with a 32-byte salt. Provider failure stops the operation, without generating replacement keys.
 
 Treat creation as a key ceremony: a provider may have created a key even if a later database commit fails. Inventory and review an orphaned key before any retry or destruction; the application never destroys provider keys automatically. Never reuse one CA key across multiple active servers.
+
+After revocation, a replacement CA uses a new key or key version. The application retains encrypted provider credentials for archived CAs so their existing CRL endpoints can continue signing. Keep those provider identities and keys available. Credential changes in **Key storage** apply to the current CA; updating archived provider credentials is not supported through this page.
 
 ## Verification boundary
 

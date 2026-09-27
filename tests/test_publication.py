@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.x509.oid import AuthorityInformationAccessOID
 
-from app import create_app, get_db
+from app import create_app, current_authority, get_db
 from audit_integrity import AuditIntegrityError
 from mfa_helpers import complete_mfa
 import pki
@@ -69,7 +69,7 @@ class PublicationTests(unittest.TestCase):
 
     def authority(self):
         with self.app.app_context():
-            row = get_db().execute("SELECT * FROM authorities").fetchone()
+            row = current_authority()
             return dict(row) if row else None
 
     def configuration(self):
@@ -89,9 +89,9 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         return response
 
-    def create_ca(self, role="root", days=365):
+    def create_ca(self, role="root", days=365, name="Publication CA"):
         previous = self.state()["generation"]
-        response = self.post("/authorities", {"name": "Publication CA", "common_name": "Publication CA",
+        response = self.post("/authorities", {"name": name, "common_name": name,
                                               "role": role, "validity_days": str(days)})
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(self.authority())
@@ -215,6 +215,66 @@ class PublicationTests(unittest.TestCase):
         with patch("publication.publish") as upload:
             self.assertEqual(self.cycle(), {"status": "waiting"})
             upload.assert_not_called()
+
+    def test_replacement_preserves_old_artifacts_and_requires_new_publication_locations(self):
+        original = self.create_ca()
+        self.configure()
+        with patch("publication.publish"):
+            self.assertEqual(self.cycle()["status"], "published")
+        old_crl = self.get(f"/crl/{original['id']}.crl").data
+        old_aia = self.get(f"/aia/{original['id']}.cer").data
+        self.post(f"/authorities/{original['id']}/revoke", {"reason": "superseded"})
+        replacement = self.create_ca(name="Replacement CA")
+        self.assertNotEqual(original["id"], replacement["id"])
+        config = self.configuration()
+        self.assertFalse(config["enabled"])
+        self.assertEqual((config["crl_url"], config["aia_url"], config["directory"]), ("", "", ""))
+        self.assertIsNone(self.state()["last_success"])
+        self.assertIsNone(self.state()["last_published_crl_number"])
+        self.assertEqual(self.state()["failures"], 0)
+        with patch("publication.publish") as upload:
+            self.assertEqual(self.cycle(), {"status": "disabled"})
+            upload.assert_not_called()
+        self.assertEqual(self.get(f"/crl/{original['id']}.crl").data, old_crl)
+        self.assertEqual(self.get(f"/aia/{original['id']}.cer").data, old_aia)
+        page = self.get("/settings/publication")
+        self.assertIn(b"A fresh CRL will be generated before publication", page.data)
+        with self.app.app_context():
+            self.assertEqual(publication.public_url("crl", original["id"]), self.crl_url)
+            self.assertEqual(publication.public_url("aia", original["id"]), self.aia_url)
+            self.assertEqual(publication.public_url("crl", replacement["id"]), f"https://pki.example/crl/{replacement['id']}.crl")
+        # URL-only mode must also keep the predecessor's retrieval addresses intact.
+        response = self.post("/settings/publication", self.values(enabled=""))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Use new CRL and AIA URLs", response.data)
+        fresh_urls = {"crl_url": "https://public.example/new/ca.crl", "aia_url": "https://public.example/new/ca.cer"}
+        response = self.post("/settings/publication", self.values(**fresh_urls))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"different SFTP directory", response.data)
+        self.configure(directory="/public/new", **fresh_urls)
+        with patch("publication.publish") as upload:
+            self.assertEqual(self.cycle()["status"], "published")
+            destination, artifacts = upload.call_args.args
+            self.assertEqual(destination["directory"], "/public/new")
+            cert = x509.load_der_x509_certificate(next(item["content"] for item in artifacts if item["name"] == "ca.cer"))
+            self.assertEqual(cert.serial_number, int(replacement["serial_number"], 0))
+        self.assertEqual(self.get(f"/crl/{original['id']}.crl").data, old_crl)
+        self.assertEqual(self.get(f"/aia/{original['id']}.cer").data, old_aia)
+
+    def test_replacement_cannot_change_authority_while_upload_holds_publication_lock(self):
+        original = self.create_ca()
+        self.configure()
+        self.post(f"/authorities/{original['id']}/revoke", {"reason": "superseded"})
+        config, state = self.configuration(), self.state()
+        with self.app.app_context(), publication.publication_lock() as acquired:
+            self.assertTrue(acquired)
+            response = self.post("/authorities", {"name": "Replacement CA", "common_name": "Replacement CA",
+                                                   "role": "root", "validity_days": "365"})
+            self.assertEqual(response.status_code, 200)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM authorities").fetchone()[0], 1)
+        self.assertEqual(self.configuration(), config)
+        self.assertEqual(self.state(), state)
 
     def test_queue_commit_and_rollback_survive_application_restart(self):
         original = self.state()["generation"]

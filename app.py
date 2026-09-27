@@ -69,10 +69,10 @@ def authority_is_active(authority: sqlite3.Row) -> bool:
 
 
 def authority_block_reason(authority: sqlite3.Row) -> str:
-    if authority["state"] != "active":
-        return "Awaiting a signed CA certificate and its parent chain."
     if authority["revoked_at"]:
         return "The local CA has been disabled."
+    if authority["state"] != "active":
+        return "Awaiting a signed CA certificate and its parent chain."
     cert = x509.load_pem_x509_certificate(authority["certificate_pem"].encode())
     key = cert.public_key()
     if not ((isinstance(key, rsa.RSAPublicKey) and key.key_size >= 3072) or
@@ -197,7 +197,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.register_blueprint(security)
     from key_storage import init_key_storage, authority_signing_key, provision_authority_key
     init_key_storage(app)
-    from publication import init_publication, ensure_crl, queue_publication
+    from publication import init_publication, ensure_crl, queue_publication, publication_lock, reset_for_new_authority
     init_publication(app)
 
     @app.before_request
@@ -211,6 +211,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/")
     def index() -> str:
         authorities = list_authorities()
+        authority = current_authority()
         active_authority_ids = {item["id"] for item in authorities if authority_is_active(item)}
         issuing = [item for item in authorities if item["role"] == "issuing" and item["id"] in active_authority_ids]
         query = request.args.get("q", "").strip()[:255]
@@ -231,10 +232,10 @@ def create_app(test_config: dict | None = None) -> Flask:
             COALESCE(SUM(revoked_at IS NULL AND not_after > ? AND not_after <= ?), 0) AS expiring
             FROM certificates""", (utc_now().isoformat(), utc_now().isoformat(), (utc_now() + timedelta(days=30)).isoformat())).fetchone()
         return render_template("index.html", title="Certificate inventory", authorities=authorities,
-                               authority=authorities[0] if authorities else None,
-                               block_reason=authority_block_reason(authorities[0]) if authorities else "",
-                               ca_requests=db.execute("SELECT r.*, u.username AS requester FROM ca_requests r LEFT JOIN users u ON u.id=r.requested_by ORDER BY r.id DESC LIMIT 100").fetchall(),
-                               issued_authorities=db.execute("SELECT * FROM issued_authorities ORDER BY id DESC LIMIT 100").fetchall(),
+                               authority=authority, archived_authorities=[item for item in authorities if item["revoked_at"]],
+                               block_reason=authority_block_reason(authority) if authority else "",
+                               ca_requests=db.execute("SELECT r.*, u.username AS requester, a.name AS authority_name FROM ca_requests r LEFT JOIN users u ON u.id=r.requested_by JOIN authorities a ON a.id=r.authority_id ORDER BY r.id DESC LIMIT 100").fetchall(),
+                               issued_authorities=db.execute("SELECT i.*, a.name AS authority_name FROM issued_authorities i JOIN authorities a ON a.id=i.authority_id ORDER BY i.id DESC LIMIT 100").fetchall(),
                                certificates=certificates, issuing_authorities=issuing,
                                active_authority_ids=active_authority_ids, key_download_enabled=key_download_enabled(),
                                revocation_reasons=REVOCATION_REASONS, now=utc_now().isoformat(),
@@ -265,29 +266,39 @@ def create_app(test_config: dict | None = None) -> Flask:
         try:
             if not name or len(name) > 100 or not common_name or role not in {"root", "intermediate", "issuing"}:
                 raise ValueError("Provide a name (up to 100 characters), role, and certificate common name.")
-            db.execute("BEGIN IMMEDIATE")
-            if db.execute("SELECT 1 FROM authorities LIMIT 1").fetchone():
-                raise ValueError("Only one CA is permitted per server. Use a separate server for another CA.")
-            if parent_id:
-                raise ValueError("A parent CA must run on a separate server. Exchange a CSR and signed certificates through the web console.")
-            signer, backend, reference = provision_authority_key()
-            if role == "root":
-                pem, key, serial, start, end = create_ca_certificate(common_name=common_name, validity_days=days, role=role, signer=signer)
-                csr, state = "", "active"
-            else:
-                csr, key = create_ca_request(common_name, role, signer=signer)
-                pem, serial, start, end, state = "", "", "", "", "pending"
-            result = db.execute("""INSERT INTO authorities
-                (name, role, common_name, certificate_pem, private_key_pem, serial_number, not_before, not_after, csr_pem, state, key_backend, key_reference)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name, role, common_name, pem, encrypt_private_key(key) if key else "", serial, start, end, csr, state, backend, reference))
-            audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
-            queue_publication(db)
-            db.commit()
+            with publication_lock() as acquired:
+                # Serialize retirement with uploads before taking SQLite's write lock.
+                if not acquired:
+                    raise ValueError("Only one CA can be initialized at a time. CA initialization or publication is in progress; try again shortly.")
+                db.execute("BEGIN IMMEDIATE")
+                replacement = db.execute("SELECT 1 FROM authorities LIMIT 1").fetchone() is not None
+                if current_authority(db):
+                    raise ValueError("Only one CA may be current on this server. Revoke it before initializing a replacement.")
+                if db.execute("SELECT 1 FROM authorities WHERE name=?", (name,)).fetchone():
+                    raise ValueError("A CA with this name already exists in the archive. Choose a new name for the replacement CA.")
+                if parent_id:
+                    raise ValueError("A parent CA must run on a separate server. Exchange a CSR and signed certificates through the web console.")
+                signer, backend, reference = provision_authority_key()
+                if role == "root":
+                    pem, key, serial, start, end = create_ca_certificate(common_name=common_name, validity_days=days, role=role, signer=signer)
+                    csr, state = "", "active"
+                else:
+                    csr, key = create_ca_request(common_name, role, signer=signer)
+                    pem, serial, start, end, state = "", "", "", "", "pending"
+                result = db.execute("""INSERT INTO authorities
+                    (name, role, common_name, certificate_pem, private_key_pem, serial_number, not_before, not_after, csr_pem, state, key_backend, key_reference)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (name, role, common_name, pem, encrypt_private_key(key) if key else "", serial, start, end, csr, state, backend, reference))
+                audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
+                reset_for_new_authority(db, result.lastrowid)
+                queue_publication(db)
+                db.commit()
             flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.", "success")
+            if replacement:
+                flash("Previous CA records remain in the archive. Configure separate CRL/AIA URLs and an SFTP directory for the new CA before enabling publication.", "warning")
         except sqlite3.IntegrityError:
             db.rollback()
-            flash("Only one CA is permitted per server; its identity cannot be replaced.", "error")
+            flash("Only one CA may be current on this server, and each CA needs a unique name.", "error")
         except ValueError as error:
             db.rollback()
             flash(str(error), "error")
@@ -298,7 +309,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = db.execute("SELECT * FROM authorities").fetchone()
+            authority = current_authority(db)
             if authority is None or authority["state"] != "pending" or authority["revoked_at"]:
                 raise ValueError("Only a pending local CA can be activated.")
             pem = request.form.get("certificate_pem", "").strip()
@@ -326,7 +337,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = db.execute("SELECT * FROM authorities").fetchone()
+            authority = current_authority(db)
             if authority is None or authority["state"] != "active" or authority["role"] == "root":
                 raise ValueError("Parent CRLs require an activated subordinate CA.")
             pem = request.form.get("parent_crls_pem", "")
@@ -372,7 +383,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = db.execute("SELECT * FROM authorities").fetchone()
+            authority = current_authority(db)
             role = request.form.get("role", "")
             if not authority or not valid_parent_child_roles(authority["role"], role) or not authority_is_active(authority):
                 raise ValueError("An active Root or Intermediate CA with a permitted child role is required.")
@@ -631,8 +642,11 @@ def init_db(app: Flask) -> None:
     connection = sqlite3.connect(app.config["DATABASE"], timeout=30)
     try:
         existing = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='authorities'").fetchone()
-        if existing and connection.execute("SELECT COUNT(*) FROM authorities").fetchone()[0] > 1:
-            raise RuntimeError("This installation contains multiple local CAs. Startup is blocked: only one CA is permitted per server. Preserve the database and runtime secrets; see docs/BSI-READINESS.md for migration planning. No CA data has been deleted.")
+        if existing:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(authorities)")}
+            current_filter = " WHERE revoked_at IS NULL" if "revoked_at" in columns else ""
+            if connection.execute("SELECT COUNT(*) FROM authorities" + current_filter).fetchone()[0] > 1:
+                raise RuntimeError("This installation contains multiple local CAs that have not been revoked. Startup is blocked: only one current CA is permitted per server. Preserve the database and runtime secrets; see docs/BSI-READINESS.md for migration planning. No CA data has been deleted.")
         connection.executescript("""
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
@@ -689,11 +703,16 @@ def init_db(app: Flask) -> None:
                     if name not in columns:
                         connection.execute(f"ALTER TABLE authorities ADD COLUMN {name} {declaration}")
         connection.executescript("""
+            BEGIN IMMEDIATE;
             CREATE TRIGGER IF NOT EXISTS immutable_ca_key_binding BEFORE UPDATE OF key_backend, key_reference ON authorities
             BEGIN SELECT RAISE(ABORT, 'The CA key provider and identity are immutable'); END;
-            CREATE TRIGGER IF NOT EXISTS single_local_ca BEFORE INSERT ON authorities
-            WHEN EXISTS (SELECT 1 FROM authorities)
-            BEGIN SELECT RAISE(ABORT, 'Only one CA is permitted per server'); END;
+            DROP TRIGGER IF EXISTS single_local_ca;
+            CREATE TRIGGER single_local_ca BEFORE INSERT ON authorities
+            WHEN NEW.revoked_at IS NULL AND EXISTS (SELECT 1 FROM authorities WHERE revoked_at IS NULL)
+            BEGIN SELECT RAISE(ABORT, 'Only one CA may be current per server'); END;
+            CREATE TRIGGER IF NOT EXISTS preserve_ca_revocation BEFORE UPDATE OF revoked_at ON authorities
+            WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
+            BEGIN SELECT RAISE(ABORT, 'A revoked CA cannot be restored or have its revocation changed'); END;
             CREATE TRIGGER IF NOT EXISTS no_local_parent BEFORE INSERT ON authorities
             WHEN NEW.parent_id IS NOT NULL
             BEGIN SELECT RAISE(ABORT, 'Parent CAs must run on separate servers'); END;
@@ -712,6 +731,13 @@ def init_db(app: Flask) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def current_authority(db: sqlite3.Connection | None = None) -> sqlite3.Row | None:
+    """The one non-revoked CA, including a CA awaiting certificate import."""
+    return (db if db is not None else get_db()).execute(
+        "SELECT * FROM authorities WHERE revoked_at IS NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
 
 
 def list_authorities() -> list[sqlite3.Row]:

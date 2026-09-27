@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="card"><p class="eyebrow">Cryptographic custody</p><h2>Key storage</h2>
-<p class="muted">Choose where this server's single CA key is generated and used. External providers sign certificates, CSRs and CRLs without returning the private key.</p>
+<p class="muted">Choose where this server's current CA key is generated and used. After revoking a CA, its replacement receives a fresh key. External providers sign certificates, CSRs and CRLs without returning the private key.</p>
 {% if authority %}<p class="notice">This CA is permanently bound to {{ labels[authority.key_backend] }}. Only provider credentials can be updated; replacements are verified against the existing key.</p>{% endif %}
 <form method="post" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <label>Signing provider<select name="backend" {% if authority %}disabled{% endif %}>{% for value,label in labels.items() %}<option value="{{ value }}" {% if value == provider.backend %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>

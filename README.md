@@ -8,11 +8,11 @@
 
 **Private PKI for Debian, managed entirely through your browser.**
 
-PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. Each dedicated server runs exactly one Root, Intermediate, or Issuing CA. Separate CA servers exchange CSRs, signed certificates, public chains and CRLs; their private keys remain separate. Choose local, LDAP or OpenID Connect authentication with mandatory MFA, and encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault for CA signing. Independent approval of subordinate CA requests, explicit roles and authenticated audit chains protect administration.
+PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. Each dedicated server runs one current Root, Intermediate, or Issuing CA and retains revoked CAs as history. Separate CA servers exchange CSRs, signed certificates, public chains and CRLs; their private keys remain separate. Choose local, LDAP or OpenID Connect authentication with mandatory MFA, and encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault for CA signing. Independent approval of subordinate CA requests, explicit roles and authenticated audit chains protect administration.
 
 **BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
 
-## One CA per server
+## One current CA per server
 
 ```mermaid
 flowchart LR
@@ -20,7 +20,11 @@ flowchart LR
   Issuing -->|Issue certificates| Services["Applications and devices"]
 ```
 
-An optional Intermediate CA runs on another dedicated server. SQLite guards reject a second local CA, and startup refuses legacy databases containing multiple local CAs without deleting any data. Parent servers retain only the public certificates they issue for remote CAs. CA private keys cannot be exported through the web console.
+An optional Intermediate CA runs on another dedicated server. SQLite guards reject a second current local CA, including one awaiting activation, and startup refuses databases containing multiple non-revoked local CAs without deleting any data. Parent servers retain only the public certificates they issue for remote CAs. CA private keys cannot be exported through the web console.
+
+After revoking the current CA, return to **Certificate inventory** to initialize a new Root, Intermediate or Issuing CA on the same host. The **Revoked CA archive** retains the previous CA, its issued certificates, signing requests and public download URLs. A replacement gets its own identity and key; existing certificates stay associated with their original issuer. Revocation remains permanent. Continue distributing the old CA's CRL and arrange parent revocation or removal of root trust as appropriate.
+
+Configure separate CRL/AIA publication URLs and a separate SFTP directory for the replacement before enabling uploads. Preserve the previous CA's public files and URLs for existing certificates.
 
 Use the [browser workflow and migration instructions](docs/BSI-READINESS.md#browser-workflow) to establish the hierarchy. At least two administrator accounts on each signing parent are required: one submits the child CSR and another approves it. On the child, import the signed certificate, public parent chain and current signed parent CRLs; verify the root fingerprint through a trusted channel. Missing or stale parent CRLs block signing.
 
@@ -33,7 +37,7 @@ Captured from the current web console on **2026-09-26**, using fictional demo da
 <details>
 <summary>Certificate issuance</summary>
 
-Issue certificates through the server's single CA, using certificate requests, certificate profiles and bounded validity.
+Issue certificates through the server's current CA, using certificate requests, certificate profiles and bounded validity.
 
 ![Certificate issuance through the local Issuing CA](docs/screenshots/certificate-issuance-770085c922df.png)
 
@@ -73,11 +77,11 @@ Issue certificates through the server's single CA, using certificate requests, c
 
 ## Install with APT
 
-Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.2-1**, download [`pkimaster_0.2.2-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.2-1/pkimaster_0.2.2-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
+Download the prebuilt `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest). For version **0.2.3-1**, download [`pkimaster_0.2.3-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.2.3-1/pkimaster_0.2.3-1_all.deb), then install it on Debian 13 by running these commands from the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.2.2-1_all.deb
+sudo apt install ./pkimaster_0.2.3-1_all.deb
 ```
 
 Release assets also include `SHA256SUMS` and build metadata.
@@ -88,7 +92,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.2.2-1_all.deb
+sudo apt install ./dist/pkimaster_0.2.3-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. A signed public APT repository is not published by this project yet; `apt install ./…deb` resolves dependencies using your configured Debian repositories.

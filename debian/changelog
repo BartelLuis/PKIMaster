@@ -1,3 +1,12 @@
+pkimaster (0.2.3-1) trixie; urgency=medium
+
+  * Allow a fresh local CA after revocation while retaining issuer history.
+  * Preserve historical CRL signing keys and reject reuse of revoked keys.
+  * Separate replacement CA publication from retired CA URLs and files.
+  * Show the current CA and a linked archive of revoked authorities.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 19:53:43 +0200
+
 pkimaster (0.2.2-1) trixie; urgency=medium
 
   * Omit automatic pathLenConstraint from new CA certificates and CSRs.

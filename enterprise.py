@@ -138,7 +138,7 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                         for row in connection.execute(f"SELECT {column} FROM users WHERE {column} IS NOT NULL"):
                             cipher.decrypt(row[0].encode("utf-8"))
             if "settings" in tables:
-                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config')"):
+                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config') OR key GLOB 'authority_key_storage:*'"):
                     cipher.decrypt(row[0].encode("utf-8"))
             if "identity_settings" in tables:
                 for row in connection.execute("SELECT payload FROM identity_settings"):
