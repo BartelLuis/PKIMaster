@@ -104,16 +104,43 @@ if verify_upgrade:
     credentials = json.loads(credential_file.read_text(encoding="utf-8"))
     post("/login", {key: credentials[key] for key in ("username", "password")})
     complete_authentication(credentials)
-    # A fresh signed CRL proves that the retained secret decrypts the only CA key.
-    certificate = x509.load_pem_x509_certificate(get("/authorities/1/cert").encode())
+    # A fresh signed CRL proves that the retained secret decrypts the original CA key.
+    original_pem = get("/authorities/1/cert")
+    original_chain = get("/authorities/1/chain")
+    certificate = x509.load_pem_x509_certificate(original_pem.encode())
     crl = x509.load_pem_x509_crl(get("/crl/1.crl?format=pem").encode())
     assert crl.is_signature_valid(certificate.public_key()), "Original CA signing key was not retained."
     page = post("/authorities", {
         "name": "Smoke issuing CA", "role": "issuing",
         "common_name": "Smoke issuing CA", "validity_days": "180",
     }, token_page="/")
-    assert "Only one CA is permitted per server" in page, "A second local CA must be rejected."
-    print("Upgrade preserves MFA and the original CA key; a second local CA is rejected.")
+    assert "Only one CA may be current on this server" in page, "A second current local CA must be rejected."
+
+    # Run replacement only after checking the upgraded service's original identity.
+    # The package smoke test snapshots runtime secrets and HTTPS identity; these
+    # must remain unchanged while CA history grows in the retained database.
+    post("/authorities/1/revoke", {"reason": "superseded"}, token_page="/authorities/1")
+    page = get("/")
+    assert "Initialize this server's CA" in page, "Revocation must make CA initialization available again."
+    assert "Revoked CA archive" in page, "The original CA must remain visible in the archive."
+    assert "Local CA boundary</span><strong>0 / 1</strong>" in get("/security"), "A revoked CA must not occupy the current CA slot."
+    page = post("/authorities", {
+        "name": "Smoke Replacement Root CA", "role": "root", "common_name": "Smoke Replacement Root CA",
+        "validity_days": "365",
+    }, token_page="/")
+    assert "Created root CA" in page, "The installed package must initialize a replacement after revocation."
+    assert "Revoked CA archive" in page, "Replacement must preserve the original CA archive."
+    assert "Local CA boundary</span><strong>1 / 1</strong>" in get("/security"), "Only the replacement CA must occupy the current slot."
+    replacement = x509.load_pem_x509_certificate(get("/authorities/2/cert").encode())
+    assert replacement.serial_number != certificate.serial_number, "A replacement must receive a new certificate."
+    assert replacement.public_key().public_numbers() != certificate.public_key().public_numbers(), "A replacement must receive a new key."
+    replacement_crl = x509.load_pem_x509_crl(get("/crl/2.crl?format=pem").encode())
+    assert replacement_crl.is_signature_valid(replacement.public_key()), "The replacement CA must sign its own CRL."
+    assert get("/authorities/1/cert") == original_pem, "Replacement must preserve the original CA certificate."
+    assert get("/authorities/1/chain") == original_chain, "Replacement must preserve the original CA chain."
+    archived_crl = x509.load_pem_x509_crl(get("/crl/1.crl?format=pem").encode())
+    assert archived_crl.is_signature_valid(certificate.public_key()), "The archived CA must retain its original CRL signing key."
+    print("Upgrade preserves MFA and the original CA key; revoked CA replacement preserves old certificates, chains and signed CRLs.")
 else:
     credentials = {"username": "smoke-admin", "password": secrets.token_urlsafe(32)}
     credential_file.write_text(json.dumps(credentials), encoding="utf-8")
