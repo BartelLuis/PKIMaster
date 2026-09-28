@@ -42,6 +42,8 @@ def collect_endpoint_findings(db, now, warning_days):
         LEFT JOIN certificate_endpoint_checks e ON e.certificate_id=c.id
         WHERE c.tls_enabled=1 ORDER BY COALESCE(e.checked_at,''),c.id""")]
     findings, preserved = [], set()
+    if not rows:
+        return findings, preserved
     deadline = time.monotonic() + 40
     for index, row in enumerate(rows):
         key = f"deployment:{row['id']}"
