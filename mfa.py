@@ -262,7 +262,20 @@ def _verify(enrollment: bool):
         return redirect(url_for("mfa.enroll"))
     ciphertext = user["mfa_pending_secret"] if enrollment else user["mfa_secret"]
     expired = enrollment and (not user["mfa_pending_created"] or now - user["mfa_pending_created"] >= ENROLLMENT_SECONDS)
-    if not ciphertext or expired:
+    if enrollment and expired:
+        if session.get("mfa_enrollment_displayed") or session.get("mfa_enrollment_authorized", False):
+            _, encrypted_enrollment_secret = new_enrollment_secret()
+            db.execute("""UPDATE users SET mfa_pending_secret = ?, mfa_pending_created = ?,
+                mfa_pending_token_hash = NULL WHERE id = ?""",
+                (encrypted_enrollment_secret, now, user["id"]))
+            db.commit()
+            session["mfa_enrollment_authorized"] = True
+            session.pop("mfa_enrollment_displayed", None)
+            flash("Your setup key expired. Scan the refreshed QR code and try again.", "warning")
+            return redirect(url_for("mfa.enroll"))
+        db.rollback()
+        return Response("Authenticator enrollment is unavailable. Ask an administrator for a new setup key.", status=403)
+    if not ciphertext:
         db.rollback()
         return Response("Authenticator enrollment is unavailable. Ask an administrator for a new setup key.", status=403)
     try:
@@ -275,7 +288,7 @@ def _verify(enrollment: bool):
         _failure(db, audit, user, buckets, entries, now)
         if enrollment:
             flash("Invalid or already used code. Wait for a new code and try again.", "error")
-            return _enrollment_page(None), 401
+            return _enrollment_page(secret if session.get("mfa_enrollment_displayed") else None), 401
         flash("Invalid or already used code. Wait for a new code and try again.", "error")
         return render_template("mfa_challenge.html", title="Verify authenticator"), 401
     # The write lock covers validation and consumption, across all WSGI workers.
@@ -327,7 +340,10 @@ def enroll():
     db.commit()
     # Only the trusted setup ceremony may display its own key. Keys provisioned
     # by an administrator must be delivered to the user over a separate channel.
-    display_secret = secret if session.pop("mfa_enrollment_authorized", False) else None
+    display_secret = None
+    if session.pop("mfa_enrollment_authorized", False) or session.get("mfa_enrollment_displayed"):
+        display_secret = secret
+        session["mfa_enrollment_displayed"] = True
     return _enrollment_page(display_secret)
 
 
