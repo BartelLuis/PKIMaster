@@ -18,7 +18,7 @@
       <label>External issuer <input name="external_issuer" type="url" placeholder="Exact OIDC issuer or LDAP server URL"></label>
       <label>External subject <input name="external_subject" placeholder="Exact OIDC subject or LDAP distinguished name"></label>
     </div>
-    <p class="form-hint">External accounts must match an identity in the configured provider. Every account must enroll a PKIMaster authenticator on first sign-in.</p>
+    <p class="form-hint">External accounts must match an identity in the configured provider. After creating an account, transfer its short-lived authenticator setup key over a separate protected channel.</p>
     <div class="form-actions"><button type="submit">Create user</button></div>
   </form>
 </section>
@@ -44,6 +44,14 @@
         <button class="button-secondary" type="submit">Reset password and revoke sessions</button>
       </form>
       {% else %}<p class="muted">Credentials are managed by the external identity provider.</p>{% endif %}
+      {% if not user.mfa_secret %}
+      <form method="post" action="{{ url_for('enterprise.users') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="reset_mfa_enrollment">
+        <button class="button-secondary" type="submit">Issue new authenticator setup key</button>
+      </form>
+      {% endif %}
     </div>
   </article>
   {% endfor %}

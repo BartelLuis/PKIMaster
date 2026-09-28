@@ -94,8 +94,8 @@ def wait_for_rejected_listener():
 credential_file = temporary / "smoke-credentials.json"
 
 
-def complete_authentication(credentials):
-    page = get("/")
+def complete_authentication(credentials, page=None):
+    page = page or get("/")
     enrollment = re.search(r'id="mfa-setup-key"[^>]*>([A-Z2-7]+)</dd>', page)
     if enrollment:
         credentials["mfa_secret"] = enrollment.group(1)
@@ -179,7 +179,7 @@ else:
         "organization": "PKIMaster package smoke test",
     })
     assert "Installation complete" in page, "The web-only initial setup failed."
-    complete_authentication(credentials)
+    complete_authentication(credentials, page=page)
     assert all(cookie.secure for cookie in cookies), "HTTPS sessions must use Secure cookies."
     page = post("/authorities", {
         "name": "Smoke Root CA", "role": "root", "common_name": "Smoke Root CA",

@@ -4,6 +4,7 @@
   <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Secure your account</span>
   <h1>{{ 'Replace your authenticator' if replacement else 'Set up your authenticator' }}</h1>
   {% if replacement %}<p class="notice notice-warning">Your current authenticator stays active until you verify the new one below. Completing this change signs out other sessions and replaces all recovery codes.</p>{% endif %}
+  {% if secret %}
   <p>Scan this QR code with Bitwarden or another authenticator that supports SHA-256, then enter its current 6-digit code below.</p>
   <div class="mfa-qr" role="img" aria-label="QR code to set up your PKIMaster authenticator">{{ qr_svg }}</div>
   <details class="mfa-manual-setup">
@@ -19,6 +20,10 @@
       <dt>Digits / interval</dt><dd>6 digits / 30 seconds</dd>
     </dl>
   </details>
+  {% else %}
+  <p>All accounts require a password and an authenticator code before accessing the PKI.</p>
+  <p class="notice notice-warning">Obtain the one-time setup key from your administrator over a separate protected channel and add it to your authenticator with SHA-256, 6 digits, and a 30-second interval.</p>
+  {% endif %}
   <p class="notice notice-warning">{{ 'Save the new recovery codes shown after verification.' if replacement else 'After activation, open Account security to create one-use recovery codes and store them in a safe place.' }} A password reset does not remove the authenticator requirement.</p>
   <form method="post" action="{{ url_for('mfa.replace' if replacement else 'mfa.enroll') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

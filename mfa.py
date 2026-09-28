@@ -58,12 +58,12 @@ def provisioning_uri(secret: str, username: str, organization: str) -> str:
     return "otpauth://totp/" + label + "?" + parameters
 
 
-def _enrollment_page(secret: str, *, replacement: bool = False):
+def _enrollment_page(secret: str | None, *, replacement: bool = False):
     from enterprise import get_setting
-    uri = provisioning_uri(secret, g.user["username"], get_setting("organization"))
+    uri = provisioning_uri(secret, g.user["username"], get_setting("organization")) if secret else None
     # Encode locally. Only the encoder's geometric SVG output is marked safe;
     # labels and the copyable URI remain escaped by the template engine.
-    qr_svg = Markup(segno.make_qr(uri, error="m").svg_inline(scale=4, border=4, light="white", omitsize=True))
+    qr_svg = Markup(segno.make_qr(uri, error="m").svg_inline(scale=4, border=4, light="white", omitsize=True)) if uri else None
     return render_template("mfa_enroll.html", title="Replace authenticator" if replacement else "Set up authenticator",
                            secret=secret, provisioning_uri=uri, qr_svg=qr_svg, replacement=replacement)
 
@@ -113,6 +113,12 @@ def decrypt_secret(ciphertext: str) -> str:
     if not plaintext.startswith("pkimaster-mfa-v1:"):
         raise ValueError("Invalid MFA credential encoding.")
     return plaintext.removeprefix("pkimaster-mfa-v1:")
+
+
+def new_enrollment_secret() -> tuple[str, str]:
+    """Return a plaintext setup key and its encrypted database representation."""
+    secret = base64.b32encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+    return secret, encrypt_secret(secret)
 
 
 def _services():
@@ -256,10 +262,22 @@ def _verify(enrollment: bool):
         return redirect(url_for("mfa.enroll"))
     ciphertext = user["mfa_pending_secret"] if enrollment else user["mfa_secret"]
     expired = enrollment and (not user["mfa_pending_created"] or now - user["mfa_pending_created"] >= ENROLLMENT_SECONDS)
-    if not ciphertext or expired:
+    if enrollment and expired:
+        if session.get("mfa_enrollment_displayed") or session.get("mfa_enrollment_authorized", False):
+            _, encrypted_enrollment_secret = new_enrollment_secret()
+            db.execute("""UPDATE users SET mfa_pending_secret = ?, mfa_pending_created = ?,
+                mfa_pending_token_hash = NULL WHERE id = ?""",
+                (encrypted_enrollment_secret, now, user["id"]))
+            db.commit()
+            session["mfa_enrollment_authorized"] = True
+            session.pop("mfa_enrollment_displayed", None)
+            flash("Your setup key expired. Scan the refreshed QR code and try again.", "warning")
+            return redirect(url_for("mfa.enroll"))
         db.rollback()
-        flash("Authenticator enrollment expired. Scan the new QR code or copy the new setup URI and try again.", "warning")
-        return redirect(url_for("mfa.enroll"))
+        return Response("Authenticator enrollment is unavailable. Ask an administrator for a new setup key.", status=403)
+    if not ciphertext:
+        db.rollback()
+        return Response("Authenticator enrollment is unavailable. Ask an administrator for a new setup key.", status=403)
     try:
         secret = decrypt_secret(ciphertext)
         counter = verify_totp(secret, request.form.get("code", "").strip(), user["mfa_last_counter"])
@@ -269,9 +287,8 @@ def _verify(enrollment: bool):
     if counter is None:
         _failure(db, audit, user, buckets, entries, now)
         if enrollment:
-            flash("Invalid code. Scan the QR code or copy the full setup URI so your authenticator uses SHA-256, "
-                  "6 digits and 30 seconds. Check that your device and server clocks are synchronized, then try a fresh code.", "error")
-            return _enrollment_page(secret), 401
+            flash("Invalid or already used code. Wait for a new code and try again.", "error")
+            return _enrollment_page(secret if session.get("mfa_enrollment_displayed") else None), 401
         flash("Invalid or already used code. Wait for a new code and try again.", "error")
         return render_template("mfa_challenge.html", title="Verify authenticator"), 401
     # The write lock covers validation and consumption, across all WSGI workers.
@@ -301,7 +318,7 @@ def enroll():
         return redirect(url_for("index") if session.get("mfa_verified") is True else url_for("mfa.challenge"))
     if request.method == "POST":
         return _verify(enrollment=True)
-    db, audit = _services()
+    db, _ = _services()
     db.execute("BEGIN IMMEDIATE")
     user = _current_user(db)
     if user is None:
@@ -311,19 +328,23 @@ def enroll():
         db.rollback()
         return redirect(url_for("mfa.challenge"))
     now = int(time.time())
-    if not user["mfa_pending_secret"] or not user["mfa_pending_created"] or now - user["mfa_pending_created"] >= ENROLLMENT_SECONDS:
-        secret = base64.b32encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
-        db.execute("UPDATE users SET mfa_pending_secret = ?, mfa_pending_created = ? WHERE id = ?",
-                   (encrypt_secret(secret), now, user["id"]))
-        audit("user.mfa_enrollment_started", "user", str(user["id"]))
-    else:
+    if user["mfa_pending_secret"] and user["mfa_pending_created"] and now - user["mfa_pending_created"] < ENROLLMENT_SECONDS:
         try:
             secret = decrypt_secret(user["mfa_pending_secret"])
         except (InvalidToken, ValueError, UnicodeError):
             db.rollback()
             return Response("The stored authenticator credential cannot be read. Contact your installation administrator.", status=503)
+    else:
+        db.rollback()
+        return Response("Authenticator enrollment is unavailable. Ask an administrator for a new setup key.", status=403)
     db.commit()
-    return _enrollment_page(secret)
+    # Only the trusted setup ceremony may display its own key. Keys provisioned
+    # by an administrator must be delivered to the user over a separate channel.
+    display_secret = None
+    if session.pop("mfa_enrollment_authorized", False) or session.get("mfa_enrollment_displayed"):
+        display_secret = secret
+        session["mfa_enrollment_displayed"] = True
+    return _enrollment_page(display_secret)
 
 
 @mfa.route("/mfa/challenge", methods=["GET", "POST"])
