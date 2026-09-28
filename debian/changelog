@@ -1,3 +1,62 @@
+pkimaster (0.4.0-1) trixie; urgency=medium
+
+  * Add controlled ACME enrollment, issuance, renewal and account management.
+  * Enforce configurable certificate templates across browser and ACME issuance.
+  * Track certificate owners, deployments, environments and tags with CSV export.
+  * Verify certificates deployed on TLS services and report pending replacements.
+  * Synchronize parent CRLs and archive encrypted backups and audit evidence.
+  * Redesign the web console with responsive navigation and persistent dark mode.
+  * Add a hardened automation timer and publish through the signed APT repository.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Mon, 28 Sep 2026 20:00:00 +0200
+
+pkimaster (0.3.0-1) trixie; urgency=medium
+
+  * Add encrypted complete backups and a fresh-host restore assistant.
+  * Monitor certificate and CRL expiry with email or webhook alerts.
+  * Verify public CRL retrieval, signature and freshness independently.
+  * Add single-use MFA recovery codes and controlled authenticator changes.
+  * Renew certificates with CSR support and linked issuance history.
+  * Package a five-minute monitoring timer and extend recovery checks.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 21:22:00 +0200
+
+pkimaster (0.2.4-1) trixie; urgency=medium
+
+  * Allow administrators to permanently delete revoked CAs and reuse names.
+  * Remove associated certificates, requests, CRLs and local signing data.
+  * Preserve audit evidence and prevent reuse of deleted revoked CA keys.
+  * Isolate publication cleanup and serialize deletion with CRL generation.
+  * Verify deletion and name reuse in installed-package smoke tests.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 20:21:00 +0200
+
+pkimaster (0.2.3-1) trixie; urgency=medium
+
+  * Allow a fresh local CA after revocation while retaining issuer history.
+  * Preserve historical CRL signing keys and reject reuse of revoked keys.
+  * Separate replacement CA publication from retired CA URLs and files.
+  * Show the current CA and a linked archive of revoked authorities.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 19:53:43 +0200
+
+pkimaster (0.2.2-1) trixie; urgency=medium
+
+  * Omit automatic pathLenConstraint from new CA certificates and CSRs.
+  * Accept external CA certificates without a path-length limit.
+  * Preserve existing ancestor constraints during signing and activation.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 19:41:07 +0200
+
+pkimaster (0.2.1-1) trixie; urgency=medium
+
+  * Add local QR codes and complete setup URIs for SHA-256 TOTP enrollment.
+  * Explain authenticator settings when enrollment codes are rejected.
+  * Distinguish errors and warnings from successful console notifications.
+  * Depend on Debian's Segno package for local QR code generation.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 27 Sep 2026 19:25:39 +0200
+
 pkimaster (0.2.0-1) trixie; urgency=medium
 
   * Package the web-managed PKI console as a hardened HTTPS systemd service.

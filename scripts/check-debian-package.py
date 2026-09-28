@@ -34,6 +34,12 @@ def main() -> None:
     }.items():
         require(metadata.get(name) == expected, f"Unexpected {name} field: {metadata.get(name)!r}.")
         print(f"{name}: {metadata[name]}")
+    require("python3-paramiko (>= 3.5)" in metadata.get("Depends", ""),
+            "Package must declare the supported Paramiko runtime dependency.")
+    require("python3-segno (>= 1.6.6)" in metadata.get("Depends", ""),
+            "Package must declare the Segno dependency for local MFA QR generation.")
+    require("python3-dnspython (>= 2.7)" in metadata.get("Depends", ""),
+            "Package must declare the DNS validation dependency.")
 
     archive_bytes = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
     with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as archive:
@@ -43,12 +49,29 @@ def main() -> None:
         "usr/lib/pkimaster/pki.py", "usr/lib/pkimaster/pkimaster_server.py",
         "usr/lib/pkimaster/identity.py", "usr/lib/pkimaster/key_backends.py",
         "usr/lib/pkimaster/key_storage.py", "usr/lib/pkimaster/audit_integrity.py", "usr/lib/pkimaster/security.py",
+        "usr/lib/pkimaster/publication.py", "usr/lib/pkimaster/publication_transports.py",
+        "usr/lib/pkimaster/publication_worker.py",
+        "usr/lib/pkimaster/backup.py", "usr/lib/pkimaster/renewal.py",
+        "usr/lib/pkimaster/monitoring.py", "usr/lib/pkimaster/monitoring_transports.py", "usr/lib/pkimaster/monitoring_worker.py",
+        "usr/lib/pkimaster/certificate_profiles.py", "usr/lib/pkimaster/inventory.py", "usr/lib/pkimaster/tls_monitoring.py",
+        "usr/lib/pkimaster/automation.py", "usr/lib/pkimaster/automation_worker.py", "usr/lib/pkimaster/acme_service.py",
+        "usr/lib/pkimaster/templates/certificate_templates.html", "usr/lib/pkimaster/templates/automation.html",
+        "usr/lib/pkimaster/templates/acme_settings.html", "usr/lib/pkimaster/static/js/automation.js",
         "usr/lib/pkimaster/static/css/console.css",
         "usr/lib/pkimaster/static/js/console.js",
         "usr/lib/pkimaster/templates/base.html", "usr/lib/pkimaster/templates/index.html",
         "usr/lib/pkimaster/templates/setup.html", "usr/lib/pkimaster/templates/login.html",
         "usr/lib/pkimaster/templates/settings.html", "usr/lib/systemd/system/pkimaster.service",
+        "usr/lib/pkimaster/templates/publication.html",
+        "usr/lib/systemd/system/pkimaster-publication.service",
+        "usr/lib/systemd/system/pkimaster-publication.timer",
+        "usr/lib/systemd/system/pkimaster-monitoring.service", "usr/lib/systemd/system/pkimaster-monitoring.timer",
+        "usr/lib/systemd/system/pkimaster-automation.service", "usr/lib/systemd/system/pkimaster-automation.timer",
+        "usr/lib/pkimaster/templates/certificate_renew.html", "usr/lib/pkimaster/templates/certificate_detail.html",
     }
+    publication_docs = {"usr/share/doc/pkimaster/PUBLICATION.md", "usr/share/doc/pkimaster/PUBLICATION.md.gz"}.intersection(members)
+    require(len(publication_docs) == 1, "Package must contain the publication operator documentation.")
+    required_files.update(publication_docs)
     for name in required_files:
         require(name in members, f"Required package file is missing: {name}.")
         member = members[name]

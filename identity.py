@@ -188,7 +188,7 @@ def password_login(username, password):
         return redirect(url_for("mfa.challenge" if fresh["mfa_secret"] else "mfa.enroll"))
     audit_event("session.login_failed", "user", "", "Invalid credentials")
     db.commit()
-    flash("Invalid username or password.")
+    flash("Invalid username or password.", "error")
     return render_template("login.html", title="Sign in"), 401
 
 
@@ -455,10 +455,10 @@ def settings():
             audit_event("identity.settings_updated", "settings", "", "mode=" + updated["mode"])
             db.commit()
             session.clear()
-            flash("Authentication settings saved. Sign in again; existing sessions have been revoked.")
+            flash("Authentication settings saved. Sign in again; existing sessions have been revoked.", "success")
             return redirect(url_for("enterprise.login"))
         except (ValueError, ssl.SSLError, requests.RequestException) as exc:
             _db().rollback()
-            flash(str(exc) if isinstance(exc, ValueError) else "The identity provider or its TLS trust configuration could not be validated.")
+            flash(str(exc) if isinstance(exc, ValueError) else "The identity provider or its TLS trust configuration could not be validated.", "error")
             return render_template("identity.html", title="Authentication", identity_config=value), 400
     return render_template("identity.html", title="Authentication", identity_config=value)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 import sqlite3
 import sys
@@ -19,7 +20,7 @@ from flask import Flask, Response, current_app, flash, g, redirect, render_templ
 from werkzeug.utils import secure_filename
 
 from enterprise import audit_event, can_manage, configure_runtime, get_setting, init_enterprise
-from pki import (REVOCATION_REASONS, build_crl, create_ca_certificate, create_ca_request,
+from pki import (REVOCATION_REASONS, create_ca_certificate, create_ca_request,
                  issue_end_entity_certificate, sign_ca_request, validate_ca_activation, valid_parent_child_roles, crl_signature_is_valid)
 
 
@@ -69,10 +70,10 @@ def authority_is_active(authority: sqlite3.Row) -> bool:
 
 
 def authority_block_reason(authority: sqlite3.Row) -> str:
-    if authority["state"] != "active":
-        return "Awaiting a signed CA certificate and its parent chain."
     if authority["revoked_at"]:
         return "The local CA has been disabled."
+    if authority["state"] != "active":
+        return "Awaiting a signed CA certificate and its parent chain."
     cert = x509.load_pem_x509_certificate(authority["certificate_pem"].encode())
     key = cert.public_key()
     if not ((isinstance(key, rsa.RSAPublicKey) and key.key_size >= 3072) or
@@ -159,8 +160,13 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
 
 
 def crl_distribution_url(authority_id: int) -> str | None:
-    base = get_setting("public_base_url", "").rstrip("/")
-    return f"{base}/crl/{authority_id}.crl" if base else None
+    from publication import public_url
+    return public_url("crl", authority_id)
+
+
+def issuer_certificate_url(authority_id: int) -> str | None:
+    from publication import public_url
+    return public_url("aia", authority_id)
 
 
 def create_app(test_config: dict | None = None) -> Flask:
@@ -185,17 +191,33 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     app.jinja_env.globals["csrf_token"] = get_csrf_token
     app.jinja_env.globals["has_endpoint"] = lambda name: name in app.view_functions
+    from backup import init_backup
+    init_backup(app)
     init_enterprise(app)
     from audit_integrity import init_audit, verify_chain, AuditIntegrityError
     from security import security
     init_audit(app)
     app.register_blueprint(security)
-    from key_storage import init_key_storage, authority_signing_key, provision_authority_key
+    from key_storage import init_key_storage, authority_signing_key, provision_authority_key, delete_authority_key_material
     init_key_storage(app)
+    from publication import init_publication, ensure_crl, queue_publication, publication_lock, reset_for_new_authority, delete_authority_publication
+    init_publication(app)
+    from monitoring import init_monitoring
+    init_monitoring(app)
+    from renewal import init_renewal
+    init_renewal(app)
+    from certificate_profiles import init_profiles
+    init_profiles(app)
+    from inventory import init_inventory
+    init_inventory(app)
+    from automation import init_automation
+    init_automation(app)
+    from acme_service import init_acme
+    init_acme(app)
 
     @app.before_request
     def protect_audit_integrity():
-        if request.method not in {"GET", "HEAD", "OPTIONS"} or request.endpoint in {"download_crl", "identity.oidc_callback"}:
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and request.blueprint != "acme_protocol":
             try:
                 verify_chain(get_db(), app.config["KEY_ENCRYPTION_SECRET"])
             except AuditIntegrityError:
@@ -204,34 +226,32 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/")
     def index() -> str:
         authorities = list_authorities()
+        authority = current_authority()
         active_authority_ids = {item["id"] for item in authorities if authority_is_active(item)}
         issuing = [item for item in authorities if item["role"] == "issuing" and item["id"] in active_authority_ids]
-        query = request.args.get("q", "").strip()[:255]
+        from inventory import search_filters, inventory_rows
+        from certificate_profiles import available_templates
+        filters = search_filters(request.args)
+        query = filters["q"]
         page = parse_positive_int(request.args.get("page"), 1, 1, 1000000)
-        # Escape LIKE metacharacters so the browser search is a literal substring.
-        pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         db = get_db()
-        total = db.execute("SELECT COUNT(*) FROM certificates WHERE common_name LIKE ? ESCAPE '\\'", (pattern,)).fetchone()[0]
-        certificates = db.execute(
-            """SELECT certificates.*, authorities.name AS authority_name
-               FROM certificates JOIN authorities ON authorities.id = certificates.authority_id
-               WHERE certificates.common_name LIKE ? ESCAPE '\\'
-               ORDER BY certificates.id DESC LIMIT 50 OFFSET ?""", (pattern, (page - 1) * 50)
-        ).fetchall()
+        certificates, total = inventory_rows(db, filters, page=page)
         counts = db.execute("""SELECT COUNT(*) AS total,
             COALESCE(SUM(revoked_at IS NOT NULL), 0) AS revoked,
             COALESCE(SUM(revoked_at IS NULL AND not_after <= ?), 0) AS expired,
             COALESCE(SUM(revoked_at IS NULL AND not_after > ? AND not_after <= ?), 0) AS expiring
             FROM certificates""", (utc_now().isoformat(), utc_now().isoformat(), (utc_now() + timedelta(days=30)).isoformat())).fetchone()
         return render_template("index.html", title="Certificate inventory", authorities=authorities,
-                               authority=authorities[0] if authorities else None,
-                               block_reason=authority_block_reason(authorities[0]) if authorities else "",
-                               ca_requests=db.execute("SELECT r.*, u.username AS requester FROM ca_requests r LEFT JOIN users u ON u.id=r.requested_by ORDER BY r.id DESC LIMIT 100").fetchall(),
-                               issued_authorities=db.execute("SELECT * FROM issued_authorities ORDER BY id DESC LIMIT 100").fetchall(),
+                               authority=authority, archived_authorities=[item for item in authorities if item["revoked_at"]],
+                               block_reason=authority_block_reason(authority) if authority else "",
+                               ca_requests=db.execute("SELECT r.*, u.username AS requester, a.name AS authority_name FROM ca_requests r LEFT JOIN users u ON u.id=r.requested_by JOIN authorities a ON a.id=r.authority_id ORDER BY r.id DESC LIMIT 100").fetchall(),
+                               issued_authorities=db.execute("SELECT i.*, a.name AS authority_name FROM issued_authorities i JOIN authorities a ON a.id=i.authority_id ORDER BY i.id DESC LIMIT 100").fetchall(),
                                certificates=certificates, issuing_authorities=issuing,
                                active_authority_ids=active_authority_ids, key_download_enabled=key_download_enabled(),
                                revocation_reasons=REVOCATION_REASONS, now=utc_now().isoformat(),
-                               counts=counts, query=query, page=page, total=total, max_leaf_days=int(get_setting("max_leaf_days", 397)))
+                               counts=counts, query=query, filters=filters, page=page, total=total,
+                               issuance_templates=available_templates(db, g.user["role"]),
+                               max_leaf_days=int(get_setting("max_leaf_days", 397)))
 
     @app.get("/authorities/<int:authority_id>")
     def authority_detail(authority_id: int) -> str | Response:
@@ -245,6 +265,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                                child_authorities=children, issued_certificates=certificates,
                                active=authority_is_active(authority), revocation_reasons=REVOCATION_REASONS,
                                block_reason=authority_block_reason(authority),
+                               deletion_counts=authority_deletion_counts(db, authority_id),
                                key_download_enabled=key_download_enabled())
 
     @app.post("/authorities")
@@ -258,31 +279,42 @@ def create_app(test_config: dict | None = None) -> Flask:
         try:
             if not name or len(name) > 100 or not common_name or role not in {"root", "intermediate", "issuing"}:
                 raise ValueError("Provide a name (up to 100 characters), role, and certificate common name.")
-            db.execute("BEGIN IMMEDIATE")
-            if db.execute("SELECT 1 FROM authorities LIMIT 1").fetchone():
-                raise ValueError("Only one CA is permitted per server. Use a separate server for another CA.")
-            if parent_id:
-                raise ValueError("A parent CA must run on a separate server. Exchange a CSR and signed certificates through the web console.")
-            signer, backend, reference = provision_authority_key()
-            if role == "root":
-                pem, key, serial, start, end = create_ca_certificate(common_name=common_name, validity_days=days, role=role, signer=signer)
-                csr, state = "", "active"
-            else:
-                csr, key = create_ca_request(common_name, role, signer=signer)
-                pem, serial, start, end, state = "", "", "", "", "pending"
-            result = db.execute("""INSERT INTO authorities
-                (name, role, common_name, certificate_pem, private_key_pem, serial_number, not_before, not_after, csr_pem, state, key_backend, key_reference)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name, role, common_name, pem, encrypt_private_key(key) if key else "", serial, start, end, csr, state, backend, reference))
-            audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
-            db.commit()
-            flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.")
+            with publication_lock() as acquired:
+                # Serialize retirement with uploads before taking SQLite's write lock.
+                if not acquired:
+                    raise ValueError("Only one CA can be initialized at a time. CA initialization or publication is in progress; try again shortly.")
+                db.execute("BEGIN IMMEDIATE")
+                replacement = db.execute("SELECT 1 FROM authorities LIMIT 1").fetchone() is not None
+                if current_authority(db):
+                    raise ValueError("Only one CA may be current on this server. Revoke it before initializing a replacement.")
+                if db.execute("SELECT 1 FROM authorities WHERE name=?", (name,)).fetchone():
+                    raise ValueError("A CA with this name already exists in the archive. Delete the revoked CA to reuse its name, or choose another name.")
+                if parent_id:
+                    raise ValueError("A parent CA must run on a separate server. Exchange a CSR and signed certificates through the web console.")
+                signer, backend, reference = provision_authority_key()
+                if role == "root":
+                    pem, key, serial, start, end = create_ca_certificate(common_name=common_name, validity_days=days, role=role, signer=signer)
+                    csr, state = "", "active"
+                else:
+                    csr, key = create_ca_request(common_name, role, signer=signer)
+                    pem, serial, start, end, state = "", "", "", "", "pending"
+                result = db.execute("""INSERT INTO authorities
+                    (name, role, common_name, certificate_pem, private_key_pem, serial_number, not_before, not_after, csr_pem, state, key_backend, key_reference)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (name, role, common_name, pem, encrypt_private_key(key) if key else "", serial, start, end, csr, state, backend, reference))
+                audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
+                reset_for_new_authority(db, result.lastrowid)
+                queue_publication(db)
+                db.commit()
+            flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.", "success")
+            if replacement:
+                flash("Previous CA records remain in the archive. Configure separate CRL/AIA URLs and an SFTP directory for the new CA before enabling publication.", "warning")
         except sqlite3.IntegrityError:
             db.rollback()
-            flash("Only one CA is permitted per server; its identity cannot be replaced.")
+            flash("Only one CA may be current on this server, and each CA needs a unique name.", "error")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/activate")
@@ -290,7 +322,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = db.execute("SELECT * FROM authorities").fetchone()
+            authority = current_authority(db)
             if authority is None or authority["state"] != "pending" or authority["revoked_at"]:
                 raise ValueError("Only a pending local CA can be activated.")
             pem = request.form.get("certificate_pem", "").strip()
@@ -305,11 +337,12 @@ def create_app(test_config: dict | None = None) -> Flask:
                        (cert.public_bytes(serialization.Encoding.PEM).decode(), chain, format(cert.serial_number, "x"),
                         cert.not_valid_before_utc.isoformat(), cert.not_valid_after_utc.isoformat(), authority["id"]))
             audit_event("authority.activated", "authority", str(authority["id"]), cert.fingerprint(hashes.SHA256()).hex())
+            queue_publication(db)
             db.commit()
-            flash("CA certificate imported. Import current parent CRLs to enable signing.")
+            flash("CA certificate imported. Import current parent CRLs to enable signing.", "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/parent-crls")
@@ -317,7 +350,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = db.execute("SELECT * FROM authorities").fetchone()
+            authority = current_authority(db)
             if authority is None or authority["state"] != "active" or authority["role"] == "root":
                 raise ValueError("Parent CRLs require an activated subordinate CA.")
             pem = request.form.get("parent_crls_pem", "")
@@ -352,10 +385,10 @@ def create_app(test_config: dict | None = None) -> Flask:
                 db.execute("UPDATE authorities SET revoked_at=COALESCE(revoked_at, ?), revocation_reason=COALESCE(revocation_reason, 'unspecified') WHERE id=?", (utc_now().isoformat(), authority["id"]))
             audit_event("authority.parent_crls_updated", "authority", str(authority["id"]), "revoked" if revoked else "valid")
             db.commit()
-            flash("Parent CRLs imported. CA signing is blocked." if revoked else "Parent CRLs validated and imported.")
+            flash("Parent CRLs imported. CA signing is blocked." if revoked else "Parent CRLs validated and imported.", "warning" if revoked else "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/requests")
@@ -363,7 +396,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = db.execute("SELECT * FROM authorities").fetchone()
+            authority = current_authority(db)
             role = request.form.get("role", "")
             if not authority or not valid_parent_child_roles(authority["role"], role) or not authority_is_active(authority):
                 raise ValueError("An active Root or Intermediate CA with a permitted child role is required.")
@@ -380,13 +413,13 @@ def create_app(test_config: dict | None = None) -> Flask:
                 (authority["id"], names[0].value, role, days, csr.public_bytes(serialization.Encoding.PEM).decode(), fingerprint, g.user["id"]))
             audit_event("ca_request.submitted", "ca_request", str(result.lastrowid), fingerprint)
             db.commit()
-            flash("CA request recorded. A different administrator must review and approve it before signing.")
+            flash("CA request recorded. A different administrator must review and approve it before signing.", "success")
         except (UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType):
             db.rollback()
-            flash("The CA request contains unsupported cryptographic data or extensions.")
+            flash("The CA request contains unsupported cryptographic data or extensions.", "error")
         except (ValueError, sqlite3.IntegrityError) as error:
             db.rollback()
-            flash(str(error) if isinstance(error, ValueError) else "This CA request has already been submitted.")
+            flash(str(error) if isinstance(error, ValueError) else "This CA request has already been submitted.", "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/requests/<int:request_id>/approve")
@@ -406,7 +439,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError(authority_block_reason(authority))
             pem, serial, start, end = sign_ca_request(pending["csr_pem"], pending["role"], pending["validity_days"],
                 authority["role"], authority["certificate_pem"], authority_signing_key(authority),
-                crl_url=crl_distribution_url(authority["id"]))
+                crl_url=crl_distribution_url(authority["id"]), aia_url=issuer_certificate_url(authority["id"]),
+                issuer_chain_pem=authority["parent_chain_pem"])
             result = db.execute("INSERT INTO issued_authorities (authority_id, common_name, role, certificate_pem, serial_number, not_before, not_after) VALUES (?,?,?,?,?,?,?)",
                 (authority["id"], pending["common_name"], pending["role"], pem, serial, start, end))
             db.execute("UPDATE ca_requests SET status='approved', reviewed_by=?, reviewed_at=?, issued_id=? WHERE id=?",
@@ -414,10 +448,10 @@ def create_app(test_config: dict | None = None) -> Flask:
             audit_event("ca_request.approved", "ca_request", str(request_id), f"requester={pending['requested_by']}; sha256={pending['fingerprint']}")
             audit_event("subordinate.issued", "issued_authority", str(result.lastrowid), pending["common_name"])
             db.commit()
-            flash("Subordinate CA certificate signed. Transfer its certificate and parent chain to its own server.")
+            flash("Subordinate CA certificate signed. Transfer its certificate and parent chain to its own server.", "success")
         except (ValueError, sqlite3.IntegrityError) as error:
             db.rollback()
-            flash(str(error) if isinstance(error, ValueError) else "The CA request could not be signed.")
+            flash(str(error) if isinstance(error, ValueError) else "The CA request could not be signed.", "error")
         return redirect(url_for("index"))
 
     @app.post("/ca/requests/<int:request_id>/reject")
@@ -431,7 +465,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         if updated:
             audit_event("ca_request.rejected", "ca_request", str(request_id))
         db.commit()
-        flash("CA request rejected." if updated else "This CA request is not pending.")
+        flash("CA request rejected." if updated else "This CA request is not pending.", "success" if updated else "error")
         return redirect(url_for("index"))
 
     @app.post("/certificates")
@@ -453,26 +487,34 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError("End-entity certificates must be issued by an Issuing CA.")
             if not authority_is_active(authority):
                 raise ValueError(authority_block_reason(authority))
+            from certificate_profiles import validate_issuance
+            policy = validate_issuance(db, request.form.get("template_id", ""), common_name=common_name,
+                                      subject_alt_names=request.form.get("subject_alt_names", ""),
+                                      validity_days=days, role=g.user["role"], profile=profile,
+                                      csr_pem=request.form.get("csr_pem", "").strip() or None)
+            profile = policy["profile"]
             pem, key, serial, start, end = issue_end_entity_certificate(
                 common_name=common_name, issuer_certificate_pem=authority["certificate_pem"],
                 issuer_private_key_pem=authority_signing_key(authority), validity_days=days,
-                subject_alt_names=request.form.get("subject_alt_names", ""), profile=profile,
-                csr_pem=request.form.get("csr_pem", "").strip() or None, crl_url=crl_distribution_url(authority["id"]), minimum_rsa_bits=3072)
+                subject_alt_names=policy["subject_alt_names"], profile=profile,
+                csr_pem=request.form.get("csr_pem", "").strip() or None, crl_url=crl_distribution_url(authority["id"]),
+                aia_url=issuer_certificate_url(authority["id"]), minimum_rsa_bits=3072)
             certificate = x509.load_pem_x509_certificate(pem.encode())
             try:
                 sans = ", ".join(str(item.value) for item in certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value)
             except x509.ExtensionNotFound:
                 sans = ""
             result = db.execute("""INSERT INTO certificates
-                (common_name, authority_id, subject_alt_names, certificate_pem, private_key_pem, serial_number, not_before, not_after, profile)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (common_name, authority["id"], sans, pem, encrypt_private_key(key) if key else "", serial, start, end, profile))
+                (common_name, authority_id, subject_alt_names, certificate_pem, private_key_pem, serial_number, not_before, not_after, profile,template_id,template_snapshot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?,?)""",
+                (common_name, authority["id"], sans, pem, encrypt_private_key(key) if key else "", serial, start, end, profile,
+                 policy["template_id"], policy["template_snapshot"]))
             audit_event("certificate.issued", "certificate", str(result.lastrowid), f"{common_name}; profile={profile}; source={'CSR' if not key else 'generated'}")
             db.commit()
-            flash(f"Issued certificate '{common_name}'.")
+            flash(f"Issued certificate '{common_name}'.", "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("index"))
 
     def revoke(table: str, record_id: int) -> Response:
@@ -495,14 +537,15 @@ def create_app(test_config: dict | None = None) -> Flask:
             db.execute("UPDATE crls SET next_update = NULL WHERE authority_id = ?", (issuer_id,))
             kind = {"authorities": "authority", "certificates": "certificate", "issued_authorities": "subordinate"}[table]
             audit_event(f"{kind}.revoked", kind, str(record_id), reason)
+            queue_publication(db)
             db.commit()
             if table == "authorities" and issuer_id is None:
-                flash("Local CA disabled. For a subordinate CA, request revocation on its parent server and distribute its updated CRL. For a root, remove trust on relying parties.")
+                flash("Local CA disabled. For a subordinate CA, request revocation on its parent server and distribute its updated CRL. For a root, remove trust on relying parties.", "warning")
             else:
-                flash("Certificate revoked. Its issuer's CRL will include the revocation on the next download.")
+                flash("Certificate revoked. The updated CRL is queued for configured external publication and available on the next CRL download.", "success")
         except ValueError as error:
             db.rollback()
-            flash(str(error))
+            flash(str(error), "error")
         return redirect(url_for("authority_detail", authority_id=record_id) if table == "authorities" else url_for("index"))
 
     @app.post("/certificates/<int:certificate_id>/revoke")
@@ -513,6 +556,50 @@ def create_app(test_config: dict | None = None) -> Flask:
     def revoke_authority(authority_id: int) -> Response:
         return revoke("authorities", authority_id)
 
+    @app.post("/authorities/<int:authority_id>/delete")
+    def delete_authority(authority_id: int) -> Response:
+        if not 0 < authority_id <= 9223372036854775807:
+            return Response("Not found", status=404)
+        db = get_db()
+        try:
+            with publication_lock() as acquired:
+                if not acquired:
+                    raise ValueError("Publication or CA initialization is in progress. Try deleting the CA again shortly.")
+                db.execute("BEGIN IMMEDIATE")
+                authority = get_authority(authority_id)
+                if authority is None:
+                    db.rollback()
+                    return Response("Not found", status=404)
+                if not authority["revoked_at"]:
+                    raise ValueError("Only a revoked CA can be deleted. Revoke this CA first.")
+                if request.form.get("confirmation_name", "") != authority["name"]:
+                    raise ValueError("Enter the CA name exactly to confirm permanent deletion.")
+                if db.execute("SELECT 1 FROM authorities WHERE parent_id=?", (authority_id,)).fetchone():
+                    raise ValueError("Another local CA still references this authority. Resolve its legacy parent relationship before deleting it.")
+                counts = authority_deletion_counts(db, authority_id)
+                delete_authority_key_material(db, authority)
+                delete_authority_publication(db, authority)
+                from monitoring import delete_authority_monitoring
+                delete_authority_monitoring(db, authority_id)
+                # Requests reference issued CA certificates; remove them first.
+                for table in ("ca_requests", "certificates", "issued_authorities", "crls"):
+                    db.execute(f"DELETE FROM {table} WHERE authority_id=?", (authority_id,))
+                db.execute("DELETE FROM authorities WHERE id=?", (authority_id,))
+                audit_event("authority.deleted", "authority", str(authority_id), json.dumps({
+                    "name": authority["name"], "serial_number": authority["serial_number"],
+                    "key_backend": authority["key_backend"], "deleted_records": counts,
+                }, sort_keys=True))
+                db.commit()
+            flash(f"Deleted CA '{authority['name']}' and its associated certificates, requests, CRLs and local key data. The name can be reused.", "success")
+            return redirect(url_for("index"))
+        except sqlite3.IntegrityError:
+            db.rollback()
+            flash("The CA still has linked data that prevents deletion. No data was deleted.", "error")
+        except ValueError as error:
+            db.rollback()
+            flash(str(error), "error")
+        return redirect(url_for("authority_detail", authority_id=authority_id))
+
     @app.post("/subordinates/<int:subordinate_id>/revoke")
     def revoke_subordinate(subordinate_id: int) -> Response:
         return revoke("issued_authorities", subordinate_id)
@@ -521,7 +608,9 @@ def create_app(test_config: dict | None = None) -> Flask:
     def download_subordinate(subordinate_id: int, artifact: str) -> Response:
         if not 0 < subordinate_id <= 9223372036854775807:
             return Response("Not found", status=404)
-        record = get_db().execute("SELECT * FROM issued_authorities WHERE id=?", (subordinate_id,)).fetchone()
+        db = get_db()
+        db.execute("BEGIN")
+        record = db.execute("SELECT * FROM issued_authorities WHERE id=?", (subordinate_id,)).fetchone()
         if record is None or artifact not in {"cert", "chain", "parents"}:
             return Response("Not found", status=404)
         body = record["certificate_pem"] if artifact == "cert" else build_ca_chain(record["authority_id"])
@@ -532,29 +621,16 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/crl/<int:authority_id>.crl")
     def download_crl(authority_id: int) -> Response:
         db = get_db()
+        db.execute("BEGIN IMMEDIATE")
         authority = get_authority(authority_id)
         if authority is None:
+            db.rollback()
             return Response("Not found", status=404)
         if authority["state"] != "active":
+            db.rollback()
             return Response("The local CA is awaiting activation.", status=409)
-        db.execute("BEGIN IMMEDIATE")
         try:
-            cached = db.execute("SELECT * FROM crls WHERE authority_id = ?", (authority_id,)).fetchone()
-            if cached and cached["next_update"] and datetime.fromisoformat(cached["next_update"]) > utc_now():
-                der = cached["der"]
-            else:
-                revoked = db.execute("""SELECT serial_number, revoked_at, revocation_reason FROM certificates
-                    WHERE authority_id = ? AND revoked_at IS NOT NULL UNION ALL
-                    SELECT serial_number, revoked_at, revocation_reason FROM issued_authorities
-                    WHERE authority_id = ? AND revoked_at IS NOT NULL""", (authority_id, authority_id)).fetchall()
-                number = (cached["number"] if cached else 0) + 1
-                der = build_crl(authority["certificate_pem"], authority_signing_key(authority),
-                                [dict(row) for row in revoked], number, int(get_setting("crl_days", 7)))
-                next_update = x509.load_der_x509_crl(der).next_update_utc.isoformat()
-                db.execute("""INSERT INTO crls(authority_id, number, der, next_update) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(authority_id) DO UPDATE SET number=excluded.number, der=excluded.der, next_update=excluded.next_update""",
-                    (authority_id, number, der, next_update))
-                audit_event("crl.published", "authority", str(authority_id), f"number={number}; entries={len(revoked)}")
+            der = ensure_crl(db, authority)
             db.commit()
         except ValueError as error:
             db.rollback()
@@ -595,14 +671,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         if artifact == "chain":
             if authority["state"] != "active":
                 return Response("The local CA is awaiting activation.", status=409)
-            return text_download(authority["name"], "chain.pem", build_ca_chain(authority_id))
+            return text_download(authority["name"], "chain.pem", authority["certificate_pem"] + authority["parent_chain_pem"])
         return Response("Not found", status=404)
 
     @app.get("/certificates/<int:certificate_id>/<artifact>")
     def download_certificate(certificate_id: int, artifact: str) -> Response:
         if not 0 < certificate_id <= 9223372036854775807:
             return Response("Not found", status=404)
-        certificate = get_db().execute("SELECT * FROM certificates WHERE id = ?", (certificate_id,)).fetchone()
+        db = get_db()
+        db.execute("BEGIN IMMEDIATE" if artifact == "key" else "BEGIN")
+        certificate = db.execute("SELECT * FROM certificates WHERE id = ?", (certificate_id,)).fetchone()
         if certificate is None:
             return Response("Not found", status=404)
         if artifact == "cert":
@@ -634,8 +712,11 @@ def init_db(app: Flask) -> None:
     connection = sqlite3.connect(app.config["DATABASE"], timeout=30)
     try:
         existing = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='authorities'").fetchone()
-        if existing and connection.execute("SELECT COUNT(*) FROM authorities").fetchone()[0] > 1:
-            raise RuntimeError("This installation contains multiple local CAs. Startup is blocked: only one CA is permitted per server. Preserve the database and runtime secrets; see docs/BSI-READINESS.md for migration planning. No CA data has been deleted.")
+        if existing:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(authorities)")}
+            current_filter = " WHERE revoked_at IS NULL" if "revoked_at" in columns else ""
+            if connection.execute("SELECT COUNT(*) FROM authorities" + current_filter).fetchone()[0] > 1:
+                raise RuntimeError("This installation contains multiple local CAs that have not been revoked. Startup is blocked: only one current CA is permitted per server. Preserve the database and runtime secrets; see docs/BSI-READINESS.md for migration planning. No CA data has been deleted.")
         connection.executescript("""
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
@@ -660,6 +741,9 @@ def init_db(app: Flask) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_certificates_authority ON certificates(authority_id);
             CREATE INDEX IF NOT EXISTS idx_authorities_parent ON authorities(parent_id);
+            CREATE TABLE IF NOT EXISTS retired_ca_keys (
+              public_key_sha256 TEXT PRIMARY KEY NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS issued_authorities (
               id INTEGER PRIMARY KEY AUTOINCREMENT, authority_id INTEGER NOT NULL REFERENCES authorities(id),
               common_name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('intermediate','issuing')),
@@ -692,18 +776,25 @@ def init_db(app: Flask) -> None:
                     if name not in columns:
                         connection.execute(f"ALTER TABLE authorities ADD COLUMN {name} {declaration}")
         connection.executescript("""
+            BEGIN IMMEDIATE;
             CREATE TRIGGER IF NOT EXISTS immutable_ca_key_binding BEFORE UPDATE OF key_backend, key_reference ON authorities
             BEGIN SELECT RAISE(ABORT, 'The CA key provider and identity are immutable'); END;
-            CREATE TRIGGER IF NOT EXISTS single_local_ca BEFORE INSERT ON authorities
-            WHEN EXISTS (SELECT 1 FROM authorities)
-            BEGIN SELECT RAISE(ABORT, 'Only one CA is permitted per server'); END;
+            DROP TRIGGER IF EXISTS single_local_ca;
+            CREATE TRIGGER single_local_ca BEFORE INSERT ON authorities
+            WHEN NEW.revoked_at IS NULL AND EXISTS (SELECT 1 FROM authorities WHERE revoked_at IS NULL)
+            BEGIN SELECT RAISE(ABORT, 'Only one CA may be current per server'); END;
+            CREATE TRIGGER IF NOT EXISTS preserve_ca_revocation BEFORE UPDATE OF revoked_at ON authorities
+            WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
+            BEGIN SELECT RAISE(ABORT, 'A revoked CA cannot be restored or have its revocation changed'); END;
             CREATE TRIGGER IF NOT EXISTS no_local_parent BEFORE INSERT ON authorities
             WHEN NEW.parent_id IS NOT NULL
             BEGIN SELECT RAISE(ABORT, 'Parent CAs must run on separate servers'); END;
             CREATE TRIGGER IF NOT EXISTS immutable_ca_identity BEFORE UPDATE OF id, role, common_name, private_key_pem, parent_id, csr_pem ON authorities
             BEGIN SELECT RAISE(ABORT, 'The local CA identity is immutable'); END;
-            CREATE TRIGGER IF NOT EXISTS preserve_local_ca BEFORE DELETE ON authorities
-            BEGIN SELECT RAISE(ABORT, 'The local CA cannot be deleted or replaced'); END;
+            DROP TRIGGER IF EXISTS preserve_local_ca;
+            CREATE TRIGGER preserve_local_ca BEFORE DELETE ON authorities
+            WHEN OLD.revoked_at IS NULL OR OLD.revoked_at = ''
+            BEGIN SELECT RAISE(ABORT, 'Only a revoked CA can be deleted'); END;
             CREATE TRIGGER IF NOT EXISTS preserve_active_ca_certificate BEFORE UPDATE OF certificate_pem, parent_chain_pem ON authorities
             WHEN OLD.state = 'active'
             BEGIN SELECT RAISE(ABORT, 'An active CA certificate cannot be replaced'); END;
@@ -715,6 +806,18 @@ def init_db(app: Flask) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def current_authority(db: sqlite3.Connection | None = None) -> sqlite3.Row | None:
+    """The one non-revoked CA, including a CA awaiting certificate import."""
+    return (db if db is not None else get_db()).execute(
+        "SELECT * FROM authorities WHERE revoked_at IS NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def authority_deletion_counts(db: sqlite3.Connection, authority_id: int) -> dict[str, int]:
+    return {table: db.execute(f"SELECT COUNT(*) FROM {table} WHERE authority_id=?", (authority_id,)).fetchone()[0]
+            for table in ("certificates", "issued_authorities", "ca_requests", "crls")}
 
 
 def list_authorities() -> list[sqlite3.Row]:
@@ -749,6 +852,8 @@ def text_download(stem: str, suffix: str, body: str) -> Response:
 
 def main() -> None:
     # Development only; the Debian service supplies HTTPS and fixed state paths.
+    from backup import apply_pending_restore
+    apply_pending_restore(Path(__file__).parent / "instance")
     create_app({"SESSION_COOKIE_SECURE": False}).run(host="127.0.0.1", port=8000)
 
 

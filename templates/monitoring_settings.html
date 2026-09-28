@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading"><div><p class="eyebrow">Operations</p><h1>Monitoring settings</h1><p>Configure expiry thresholds and notification delivery.</p></div></section>
+<section class="card"><h2>Checks and notifications</h2>
+<p class="muted">New findings, threshold escalations and recoveries create notifications. Unchanged findings are not sent again. Changes take effect on the next check.</p>
+<form method="post" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<fieldset><legend>Checks and thresholds</legend><div class="form-grid">
+<label>Certificate and CA warning days<input name="warning_days" value="{{ provider.warning_days|join(', ') }}" required><span class="muted">Comma-separated thresholds, for example 30, 14, 7.</span></label>
+<label>CRL warning hours<input type="number" name="crl_warning_hours" min="1" max="168" value="{{ provider.crl_warning_hours }}" required></label>
+</div><label class="check"><input type="checkbox" name="public_checks" {% if provider.public_checks %}checked{% endif %}> Retrieve and verify configured public CRLs</label>
+<p class="muted">Checks use the publication CRL URLs or the public base URL. They verify reachability, signature, expiry, CRL number and known revocations, including archived CAs until expiry. HTTP(S) redirects are rejected. HTTPS must be trusted by this host. Intranet addresses are supported; loopback, link-local and metadata addresses are blocked.</p></fieldset>
+<label>Notification channel<select name="channel"><option value="none" {% if provider.channel == 'none' %}selected{% endif %}>Dashboard only</option><option value="email" {% if provider.channel == 'email' %}selected{% endif %}>Email</option><option value="webhook" {% if provider.channel == 'webhook' %}selected{% endif %}>Webhook</option></select></label>
+<fieldset><legend>Email</legend><div class="form-grid">
+<label>SMTP host<input name="smtp_host" value="{{ provider.smtp_host }}" autocomplete="off"></label>
+<label>SMTP port<input type="number" name="smtp_port" value="{{ provider.smtp_port }}" min="1" max="65535"></label>
+<label>Transport security<select name="smtp_security"><option value="starttls" {% if provider.smtp_security == 'starttls' %}selected{% endif %}>STARTTLS</option><option value="tls" {% if provider.smtp_security == 'tls' %}selected{% endif %}>Implicit TLS</option></select></label>
+<label>SMTP username<input name="smtp_username" value="{{ provider.smtp_username }}" autocomplete="off"></label>
+<label>SMTP password<input type="password" name="smtp_password" autocomplete="new-password" placeholder="{{ 'Stored; leave blank to keep' if has_smtp_password else 'SMTP account password' }}"></label>
+<label>Sender address<input type="email" name="smtp_sender" value="{{ provider.smtp_sender }}"></label>
+</div><label>Recipient addresses<input name="smtp_recipients" value="{{ provider.smtp_recipients|join(', ') }}" placeholder="pki-ops@example.net, oncall@example.net"></label>
+<p class="muted">Use plain email addresses, up to ten comma-separated recipients. Leave the username blank for a TLS relay without authentication. Re-enter the password when changing the SMTP server or account.</p></fieldset>
+<fieldset><legend>Webhook</legend><label>HTTPS endpoint<input type="url" name="webhook_url" value="{{ provider.webhook_url }}" placeholder="https://monitoring.example.net/pki-events"></label>
+<label>Bearer token<input type="password" name="webhook_token" autocomplete="new-password" placeholder="{{ 'Stored; leave blank to keep' if has_webhook_token else 'Optional shared token' }}"></label>
+<label class="check"><input type="checkbox" name="clear_webhook_token"> Clear the stored webhook token</label>
+<p class="muted">PKIMaster sends JSON with an events array. Each event has a stable id, status, severity, title, detail and changed_at timestamp. Accept with HTTP 2xx. Retries use the same event ids and an Idempotency-Key header; receivers should deduplicate them.</p></fieldset>
+<p class="muted">Only the selected notification channel is used. Credentials are stored encrypted and never displayed. Saving settings does not send a message; Run checks now sends pending findings through the selected channel.</p>
+<div class="actions"><button type="submit">Save monitoring settings</button><a href="{{ url_for('monitoring.dashboard') }}">Back to monitoring</a></div>
+</form></section>
+{% endblock %}

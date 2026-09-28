@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% macro template_form(item=None) %}
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="template_id" value="{{ item.id if item else '' }}">
+  <div class="grid"><label>Name<input name="name" value="{{ item.name if item else '' }}" maxlength="100" required placeholder="Internal web servers"></label>
+  <label>Certificate purpose<select name="profile">{% for value,label in [('server','TLS server'),('client','TLS client'),('dual','TLS server and client')] %}<option value="{{ value }}" {% if item and item.profile == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label></div>
+  <label>Description<input name="description" value="{{ item.description if item else '' }}" maxlength="500"></label>
+  <div class="grid"><label>Default lifetime (days)<input type="number" name="default_validity_days" min="1" max="36500" value="{{ item.default_validity_days if item else 90 }}" required></label>
+  <label>Maximum lifetime (days)<input type="number" name="max_validity_days" min="1" max="36500" value="{{ item.max_validity_days if item else 90 }}" required></label></div>
+  <p class="muted">The installation lifetime limit and issuer expiry also apply.</p>
+  <label>Permitted DNS domains<textarea name="dns_suffixes" rows="2" placeholder="corp.example, lab.example">{{ item.dns_suffixes|join(', ') if item else '' }}</textarea></label>
+  <p class="muted">Each domain includes itself and its subdomains. Empty allows all DNS names; ACME requires an explicit domain list.</p>
+  <label class="checkbox-label"><input type="checkbox" name="allow_wildcards" {% if item and item.allow_wildcards %}checked{% endif %}> Allow wildcard DNS names</label>
+  <label class="checkbox-label"><input type="checkbox" name="allow_ip" {% if item and item.allow_ip %}checked{% endif %}> Allow IP addresses</label>
+  <label>Permitted IP networks<textarea name="ip_networks" rows="2" placeholder="10.0.0.0/8, fd00::/8">{{ item.ip_networks|join(', ') if item else '' }}</textarea></label>
+  <p class="muted">When IP addresses are enabled, an empty network list allows all IP addresses.</p>
+  <fieldset><legend>Who can use this template</legend>{% for value,label in [('admin','Administrators'),('operator','Operators'),('acme','ACME accounts')] %}<label class="checkbox-label"><input type="checkbox" name="roles" value="{{ value }}" {% if (item and value in item.roles) or (not item and value in ['admin','operator']) %}checked{% endif %}> {{ label }}</label>{% endfor %}</fieldset>
+  <label class="checkbox-label"><input type="checkbox" name="enabled" {% if not item or item.enabled %}checked{% endif %}> Enabled for new certificates and renewal</label>
+  <button type="submit">{{ 'Save template' if item else 'Create template' }}</button>
+</form>
+{% endmacro %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">Issuance policy</span><h1>Certificate templates</h1><p>Consistent lifetimes, permitted names and access rules for every issuance channel.</p></div><span class="pill">{{ templates|length }} templates</span></div>
+<section class="card"><h2>Create a template</h2><details><summary>New certificate template</summary>{{ template_form() }}</details></section>
+{% for item in templates %}<section class="card"><div class="section-heading"><div><h2>{{ item.name }}</h2><p>{{ item.description or 'Certificate issuance policy' }}</p></div><span class="pill {{ 'status-active' if item.enabled else 'status-expired' }}">{{ 'Enabled' if item.enabled else 'Disabled' }}</span></div>
+<p>{{ item.profile }} · Default {{ item.default_validity_days }} days · Maximum {{ item.max_validity_days }} days · Revision {{ item.revision }}</p>
+<p class="muted">Domains: {{ item.dns_suffixes|join(', ') or 'All DNS names' }} · Access: {{ item.roles|join(', ') }}</p>
+<details><summary>Edit policy</summary>{{ template_form(item) }}</details></section>{% endfor %}
+{% endblock %}

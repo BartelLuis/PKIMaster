@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">Certificate lifecycle</span><h1>Renew certificate</h1><p>Create a successor to {{ certificate['common_name'] }} with a new serial number and validity period.</p></div><a href="{{ url_for('renewal.detail', certificate_id=certificate['id']) }}">Certificate details</a></div>
+<section class="card">
+  <h2>Review the renewal</h2>
+  <p>The previous certificate remains unchanged. Deploy the successor before deciding whether to revoke the previous certificate.</p>
+  <dl><dt>Previous serial</dt><dd class="mono">{{ certificate['serial_number'] }}</dd><dt>Previous issuer</dt><dd>{{ certificate['authority_name'] }}</dd><dt>New issuer</dt><dd>{{ authority['name'] if authority else 'No current Issuing CA' }}{% if authority and authority['id'] != certificate['authority_id'] %} — issuer changes; deploy the new trust chain too.{% endif %}</dd></dl>
+  {% if blocked %}<p role="alert">{{ blocked }}</p>{% else %}
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="authority_id" value="{{ values.authority_id }}">
+    <label>Common name<input name="common_name" value="{{ values.common_name }}" required maxlength="255"></label>
+    <label>Subject alternative names<textarea name="subject_alt_names" rows="3">{{ values.subject_alt_names }}</textarea></label>
+    <label>Certificate template<select name="template_id" data-certificate-template required>{% for item in issuance_templates %}<option value="{{ item.id }}" data-default-days="{{ item.default_validity_days }}" data-max-days="{{ item.max_validity_days }}" data-profile="{{ item.profile }}" {% if item.id|string == values.template_id or (not values.template_id and item.builtin == values.profile) %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
+    <input type="hidden" name="profile" value="{{ values.profile }}">
+    <label>Validity in days<input name="validity_days" type="number" min="1" max="{{ maximum }}" data-installation-max="{{ maximum }}" value="{{ values.validity_days }}" required></label>
+    <label>Private key<select name="key_source"><option value="csr" {% if values.key_source == 'csr' %}selected{% endif %}>Sign a new CSR (key stays on destination)</option><option value="generated" {% if values.key_source == 'generated' %}selected{% endif %}>Generate a new key on this server</option></select></label>
+    <label>New PEM certificate signing request<textarea name="csr_pem" rows="7" spellcheck="false" placeholder="-----BEGIN CERTIFICATE REQUEST-----">{{ values.csr_pem }}</textarea></label>
+    <p class="muted">Use a new CSR to keep the key on the destination system. Generating a key requires an administrator to enable and perform its export. The previous private key is never reused automatically.</p>
+    <button type="submit">Issue successor certificate</button>
+  </form>{% endif %}
+</section>
+{% endblock %}

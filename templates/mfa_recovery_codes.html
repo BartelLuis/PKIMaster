@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Account recovery</span>
+  <h1>Save your recovery codes</h1>
+  <p class="notice notice-warning">These codes are shown only once. Store them in a protected password manager or another safe place before leaving this page.</p>
+  <p>Each code can be used once, after your normal sign-in, to replace a lost authenticator. Your previous recovery codes are invalid. Keep these codes separate from the device running your authenticator.</p>
+  <label for="recovery-codes">Recovery codes for {{ current_user['username'] }}</label>
+  <textarea id="recovery-codes" class="mono" rows="10" readonly spellcheck="false" autocomplete="off">{{ codes|join('\n') }}</textarea>
+  <p class="muted">PKIMaster stores only hashes and cannot display these codes again. If you lose them, create another set in Account security using your authenticator.</p>
+  <p><a class="button" href="{{ url_for('mfa.account') }}">I have saved my recovery codes</a></p>
+</section>
+{% endblock %}

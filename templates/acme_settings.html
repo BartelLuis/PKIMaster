@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">Automation</span><h1>ACME certificate enrollment</h1><p>Issue and renew certificates with Certbot, lego, and other ACME clients. Client private keys stay on their hosts.</p></div></div>
+<section class="card"><h2>Service</h2><p>Directory URL: <code>{{ directory_url }}</code></p>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="save">
+<label class="checkbox-label"><input type="checkbox" name="enabled" {% if config.enabled %}checked{% endif %}> Enable ACME on this Issuing CA</label>
+<div class="form-grid"><label>Certificate lifetime (days)<input type="number" min="1" max="825" name="validity_days" value="{{ config.validity_days }}" required></label></div>
+<label class="checkbox-label"><input type="checkbox" name="http01" {% if config.http01 %}checked{% endif %}> HTTP-01: validate the challenge on the requested host's port 80</label>
+<label class="checkbox-label"><input type="checkbox" name="dns01" {% if config.dns01 %}checked{% endif %}> DNS-01: validate DNS TXT records; required for wildcard certificates</label>
+<label class="checkbox-label"><input type="checkbox" name="allow_private" {% if config.allow_private %}checked{% endif %}> Allow HTTP-01 on private intranet addresses</label>
+<p class="form-hint">Loopback, link-local, metadata, multicast and reserved addresses remain blocked. HTTP-01 requires a direct HTTP 200 response; redirects are not followed. DNS-01 uses this server's configured DNS resolvers.</p>
+<p class="form-hint">Issuance requires a valid Issuing CA, fresh parent CRLs, and an enabled certificate template that allows the ACME role. Account enrollment always requires a one-use credential.</p>
+<button type="submit">Save ACME settings</button></form></section>
+{% if credential %}<section class="card"><h2>New enrollment credential</h2><p class="notice">Copy the HMAC key now. It is displayed once, expires after seven days, and can enroll one account.</p>
+<dl><dt>EAB key ID</dt><dd><code>{{ credential.id }}</code></dd><dt>EAB HMAC key</dt><dd><code>{{ credential.secret }}</code></dd></dl>
+<p>Store these values securely on the client, then supply them as its external account binding credentials.</p></section>{% endif %}
+<section class="card"><h2>Authorize a client</h2><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="create_eab">
+<div class="form-grid"><label>Client label<input name="label" maxlength="100" required placeholder="Web server production"></label>
+<label>Certificate template<select name="profile_id" required><option value="">Select an ACME-enabled template</option>{% for template in templates %}<option value="{{ template.id }}">{{ template.name }}</option>{% endfor %}</select></label></div>
+<label>Permitted DNS names<textarea name="domains" rows="3" required placeholder="app.example.com&#10;*.services.example.com"></textarea></label>
+<p class="form-hint">One name per line. A wildcard grant permits subdomains and wildcard certificates; add the domain itself separately when needed. Certificate template restrictions also apply. Create or edit a certificate template to allow the ACME role before generating credentials.</p>
+<button type="submit" {% if not templates %}disabled{% endif %}>Generate one-use credential</button></form></section>
+<section class="card"><h2>Enrollment credentials</h2><div class="table-wrap"><table><thead><tr><th>Client</th><th>Permitted names</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead><tbody>
+{% for item in credentials %}<tr><td>{{ item.label }}</td><td>{{ item.domains }}</td><td>{{ item.expires }}</td><td>{{ 'Used' if item.used_at else 'Revoked' if item.revoked else 'Available until expiry' }}</td><td>{% if not item.used_at and not item.revoked %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="revoke_eab"><input type="hidden" name="id" value="{{ item.id }}"><button class="danger" type="submit">Revoke credential</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No enrollment credentials yet.</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="card"><h2>Accounts</h2><div class="table-wrap"><table><thead><tr><th>Account</th><th>Permitted names</th><th>Status</th><th>Action</th></tr></thead><tbody>
+{% for item in accounts %}<tr><td><code>{{ item.id }}</code><br>{{ item.contacts }}</td><td>{{ item.domains }}</td><td>{{ item.status }}</td><td>{% if item.status == 'valid' %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="deactivate_account"><input type="hidden" name="id" value="{{ item.id }}"><button class="danger" type="submit">Deactivate account</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No ACME accounts yet.</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="card"><h2>Recent orders</h2><div class="table-wrap"><table><thead><tr><th>Created</th><th>Identifiers</th><th>Status</th></tr></thead><tbody>{% for item in recent_orders %}<tr><td>{{ item.created_at }}</td><td>{{ item.identifiers }}</td><td>{{ item.status }}</td></tr>{% else %}<tr><td colspan="3">No orders yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

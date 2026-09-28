@@ -2,7 +2,7 @@
   <div class="section-heading"><div><span class="eyebrow">Server identity</span><h2>Local certificate authority</h2></div>{% if authority %}<a class="button button-secondary button-small" href="{{ url_for('authority_detail', authority_id=authority['id']) }}">View authority</a>{% endif %}</div>
   {% if authority %}
   <div class="authority-identity"><span class="authority-emblem">{{ icon('shield') }}</span><div><a class="authority-name" href="{{ url_for('authority_detail', authority_id=authority['id']) }}">{{ authority['name'] }}</a><div class="authority-badges"><span class="pill">{{ authority['role'] }}</span><span class="pill pill-dot {{ 'status-pending' if block_reason else 'status-active' }}">{{ 'Signing blocked' if block_reason else 'Operational' }}</span></div></div></div>
-  <p class="authority-description">This is the only CA on this server. Other trust tiers run on separate servers. Its private key cannot be exported through the console.</p>
+  <p class="authority-description">This is the current CA on this server. Other trust tiers run on separate servers. Revoked CAs remain in the archive. Its private key cannot be exported through the console.</p>
   {% if block_reason %}<p class="notice notice-warning" role="status">{{ block_reason }}</p>{% endif %}
   <p class="actions">
     {% if authority['csr_pem'] %}<a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='csr') }}">Download CA CSR</a>{% endif %}
@@ -35,22 +35,44 @@
   </details>
   {% endif %}
   {% elif can_manage('admin') %}
-  <p>Initialize exactly one CA on this server. Choose a Root CA, or generate a CSR for an Intermediate or Issuing CA whose parent runs on another server. This identity cannot be replaced through the console.</p>
+  <p>Initialize a CA on this server. Choose a Root CA, or generate a CSR for an Intermediate or Issuing CA whose parent runs on another server. Only one current CA is permitted. After revocation, you can initialize a new CA; the previous CA and its history are retained.</p>
   <form method="post" action="{{ url_for('create_authority') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="grid">
-      <label>Name<input name="name" required maxlength="100" placeholder="Operations Issuing CA"></label>
+      <label>Name (unique, including archived CAs)<input name="name" required maxlength="100" placeholder="Operations Issuing CA"></label>
       <label>Role<select name="role"><option value="issuing">Issuing — external parent</option><option value="intermediate">Intermediate — external parent</option><option value="root">Root — self-signed</option></select></label>
     </div>
     <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="Operations Issuing CA"></label>
+    <p class="muted">Archived CA names remain reserved until an administrator permanently deletes that CA. A deleted CA's display name can be used again. The certificate common name may match a previous CA.</p>
     <label>Root validity in days (subordinate validity is assigned by the parent)<input name="validity_days" type="number" min="1" max="7300" value="3650" required></label>
     <button type="submit">Initialize this server's CA</button>
   </form>
   {% else %}<p>A security administrator must initialize this server's CA.</p>{% endif %}
 </section>
 
-{% if authority and authority['role'] != 'issuing' %}
-{% if can_manage('admin') %}
+{% if archived_authorities %}
+<section class="card">
+  <div class="section-heading"><div><h2>Revoked CA archive</h2><p>Previous local CAs and their public artifacts remain available until explicitly deleted. Revocation is permanent.</p></div><span class="pill">{{ archived_authorities|length }} archived</span></div>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Authority</th><th>Role</th><th>Revoked</th><th>Artifacts</th></tr></thead>
+    <tbody>{% for archived in archived_authorities %}<tr>
+      <td><a href="{{ url_for('authority_detail', authority_id=archived['id']) }}">{{ archived['name'] }}</a><br><small class="mono">{{ archived['common_name'] }}</small></td>
+      <td>{{ archived['role'] }}</td>
+      <td><span class="pill status-revoked">Revoked</span><br><small>{{ archived['revoked_at'][:10] }}</small></td>
+      <td class="actions">
+        {% if archived['state'] == 'active' %}
+        <a href="{{ url_for('download_authority', authority_id=archived['id'], artifact='cert') }}">Certificate</a>
+        <a href="{{ url_for('download_authority', authority_id=archived['id'], artifact='chain') }}">Chain</a>
+        <a href="{{ url_for('download_crl', authority_id=archived['id']) }}">CRL</a>
+        {% elif archived['csr_pem'] %}<a href="{{ url_for('download_authority', authority_id=archived['id'], artifact='csr') }}">CSR</a>{% endif %}
+        {% if can_manage('admin') %}<a href="{{ url_for('authority_detail', authority_id=archived['id'], _anchor='delete-authority') }}">Delete CA</a>{% endif %}
+      </td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+
+{% if can_manage('admin') and authority and authority['role'] != 'issuing' and authority['id'] in active_authority_ids %}
 <section class="card">
   <div class="section-heading"><div><span class="eyebrow">Approval workflow</span><h2>Request subordinate CA signing</h2></div><span class="pill">Two-person approval</span></div>
   <p class="muted">Submit a CSR generated on the subordinate CA's own server. A different administrator must review and approve the request. No subordinate private key is generated or stored here.</p>
@@ -63,14 +85,16 @@
   </form>
 </section>
 {% endif %}
+{% if ca_requests or issued_authorities or (authority and authority['role'] != 'issuing') %}
 <section class="card">
   <div class="section-heading"><div><h2>CA signing requests</h2><p>Most recent 100 requests. Approval signs the exact recorded CSR and policy shown below.</p></div></div>
   {% for entry in ca_requests %}
   <details><summary>#{{ entry['id'] }} · {{ entry['common_name'] }} <span class="pill {{ 'status-pending' if entry['status'] == 'pending' else '' }}">{{ entry['status'] }}</span></summary>
     <p>Requested by {{ entry['requester'] }} · {{ entry['role'] }} · {{ entry['validity_days'] }} days</p>
+    <p>Signing authority: <a href="{{ url_for('authority_detail', authority_id=entry['authority_id']) }}">{{ entry['authority_name'] }}</a>{% if entry['authority_id'] not in active_authority_ids %} <span class="pill status-revoked">Issuer inactive</span>{% endif %}</p>
     <p>CSR SHA-256: <span class="mono">{{ entry['fingerprint'] }}</span></p>
     <label>Recorded CSR<textarea rows="6" readonly>{{ entry['csr_pem'] }}</textarea></label>
-    {% if entry['status'] == 'pending' and can_manage('admin') %}
+    {% if entry['status'] == 'pending' and can_manage('admin') and authority and authority['role'] != 'issuing' and entry['authority_id'] == authority['id'] and entry['authority_id'] in active_authority_ids %}
     {% if entry['requested_by'] != current_user['id'] %}
     <form method="post" action="{{ url_for('approve_subordinate', request_id=entry['id']) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -89,10 +113,10 @@
 <section class="card">
   <div class="section-heading"><div><h2>Issued subordinate CA certificates</h2><p>Public certificates for CAs on other servers. This server holds no private keys for them. Most recent 100 certificates.</p></div></div>
   <div class="table-scroll"><table>
-    <thead><tr><th>Common name</th><th>Role</th><th>Status / expires</th><th>Artifacts</th></tr></thead>
+    <thead><tr><th>Common name</th><th>Issuer / role</th><th>Status / expires</th><th>Artifacts</th></tr></thead>
     <tbody>{% for entry in issued_authorities %}<tr>
-      <td>{{ entry['common_name'] }}</td><td>{{ entry['role'] }}</td>
-      <td><span class="pill {{ 'status-revoked' if entry['revoked_at'] else 'status-active' }}">{{ 'Revoked' if entry['revoked_at'] else 'Issued' }}</span><br><small>{{ entry['not_after'][:10] }}</small></td>
+      <td>{{ entry['common_name'] }}</td><td><a href="{{ url_for('authority_detail', authority_id=entry['authority_id']) }}">{{ entry['authority_name'] }}</a><br><small>{{ entry['role'] }}</small></td>
+      <td>{% if entry['revoked_at'] %}<span class="pill status-revoked">Revoked</span>{% elif entry['authority_id'] not in active_authority_ids %}<span class="pill status-revoked">Issuer inactive</span>{% else %}<span class="pill status-active">Issued</span>{% endif %}<br><small>{{ entry['not_after'][:10] }}</small></td>
       <td class="actions">
         <a href="{{ url_for('download_subordinate', subordinate_id=entry['id'], artifact='cert') }}">Certificate</a>
         <a href="{{ url_for('download_subordinate', subordinate_id=entry['id'], artifact='parents') }}">Parent chain</a>

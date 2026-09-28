@@ -2,13 +2,13 @@ Source: pkimaster
 Section: admin
 Priority: optional
 Maintainer: PKIMaster maintainers <maintainers@pkimaster.de>
-Build-Depends: debhelper-compat (= 13), python3 (>= 3.11), python3-flask (>= 3.1), python3-cryptography (>= 43), python3-werkzeug (>= 3.1), python3-jwt (>= 2.10.1), python3-ldap3 (>= 2.9.1), python3-requests (>= 2.32), python3-asn1crypto (>= 1.5.1), python3-pykcs11 (>= 1.5.17), softhsm2, gunicorn (>= 23)
+Build-Depends: debhelper-compat (= 13), python3 (>= 3.11), python3-flask (>= 3.1), python3-cryptography (>= 43), python3-werkzeug (>= 3.1), python3-jwt (>= 2.10.1), python3-ldap3 (>= 2.9.1), python3-requests (>= 2.32), python3-asn1crypto (>= 1.5.1), python3-paramiko (>= 3.5), python3-segno (>= 1.6.6), python3-dnspython (>= 2.7), python3-pykcs11 (>= 1.5.17), softhsm2, gunicorn (>= 23)
 Standards-Version: 4.7.2
 Rules-Requires-Root: no
 
 Package: pkimaster
 Architecture: all
-Depends: ${misc:Depends}, python3 (>= 3.11), python3-flask (>= 3.1), python3-cryptography (>= 43), python3-werkzeug (>= 3.1), python3-jwt (>= 2.10.1), python3-ldap3 (>= 2.9.1), python3-requests (>= 2.32), python3-asn1crypto (>= 1.5.1), gunicorn (>= 23), adduser
+Depends: ${misc:Depends}, python3 (>= 3.11), python3-flask (>= 3.1), python3-cryptography (>= 43), python3-werkzeug (>= 3.1), python3-jwt (>= 2.10.1), python3-ldap3 (>= 2.9.1), python3-requests (>= 2.32), python3-asn1crypto (>= 1.5.1), python3-paramiko (>= 3.5), python3-segno (>= 1.6.6), python3-dnspython (>= 2.7), gunicorn (>= 23), adduser
 Recommends: python3-pykcs11 (>= 1.5.17), softhsm2
 Description: web-managed public key infrastructure service
  Run one Root, Intermediate or Issuing CA per server through an HTTPS

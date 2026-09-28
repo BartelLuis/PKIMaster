@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">Certificate lifecycle</span><h1>{{ certificate['common_name'] }}</h1><p>Certificate identity, downloads and renewal history.</p></div><a href="{{ url_for('index') }}">Certificate inventory</a></div>
+<section class="card">
+  <h2>Certificate details</h2>
+  <dl><dt>Serial number</dt><dd class="mono">{{ certificate['serial_number'] }}</dd><dt>Issuer</dt><dd><a href="{{ url_for('authority_detail', authority_id=certificate['authority_id']) }}">{{ certificate['authority_name'] }}</a></dd><dt>Profile</dt><dd>{{ certificate['profile'] }}</dd><dt>SANs</dt><dd class="mono">{{ certificate['subject_alt_names'] or 'None' }}</dd><dt>Valid from</dt><dd>{{ certificate['not_before'] }}</dd><dt>Valid until</dt><dd>{{ certificate['not_after'] }}</dd><dt>Status</dt><dd>{% if certificate['revoked_at'] %}<span class="pill status-revoked">Revoked</span>{% elif certificate['not_after'] <= now %}<span class="pill status-expired">Expired</span>{% elif issuer_block_reason %}<span class="pill status-revoked">Issuer inactive</span>{% else %}<span class="pill status-active">Active</span>{% endif %}</dd></dl>
+  <div class="actions"><a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='cert') }}">Download certificate</a><a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='chain') }}">Download chain</a>{% if key_download_enabled and certificate['private_key_pem'] %}<a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='key') }}">Download key</a>{% endif %}</div>
+</section>
+<section class="card"><h2>Renewal history</h2><dl><dt>Predecessor</dt><dd>{% if predecessor %}<a href="{{ url_for('renewal.detail', certificate_id=predecessor['id']) }}">{{ predecessor['common_name'] }} · {{ predecessor['serial_number'] }}</a>{% else %}No retained predecessor{% endif %}</dd><dt>Successor</dt><dd>{% if successor %}<a href="{{ url_for('renewal.detail', certificate_id=successor['id']) }}">{{ successor['common_name'] }} · {{ successor['serial_number'] }}</a>{% else %}Not renewed{% endif %}</dd></dl>
+{% if not successor and not certificate['revoked_at'] and can_manage('admin', 'operator') %}<a class="button" href="{{ url_for('renewal.renew', certificate_id=certificate['id']) }}">Renew certificate</a>{% endif %}
+</section>
+<section class="card"><div class="section-heading"><div><h2>Ownership &amp; deployment</h2><p>Keep the responsible person and the service using this certificate together.</p></div></div>
+{% if can_manage('admin','operator') %}<form method="post" action="{{ url_for('inventory.update_metadata', certificate_id=certificate['id']) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="grid"><label>Owner or team<input name="owner" maxlength="150" value="{{ certificate['owner'] }}" placeholder="Platform team"></label><label>Service<input name="service_name" maxlength="150" value="{{ certificate['service_name'] }}" placeholder="Internal dashboard"></label></div>
+<div class="grid"><label>Server / deployment location<input name="deployment_host" maxlength="253" value="{{ certificate['deployment_host'] }}" placeholder="web-01"></label><label>Environment<input name="environment" maxlength="50" value="{{ certificate['environment'] }}" placeholder="Production"></label></div>
+<label>Tags<input name="tags" maxlength="500" value="{{ certificate['tags'] }}" placeholder="web, production, linux"></label>
+<label>Notes<textarea name="notes" rows="3" maxlength="2000">{{ certificate['notes'] }}</textarea></label>
+{% if can_manage('admin') %}<fieldset><legend>Check the deployed TLS certificate</legend>
+<p class="muted">The monitoring service connects to this endpoint and checks its hostname, trust chain and certificate fingerprint. Use a TLS service such as HTTPS or LDAPS; STARTTLS is not supported.</p>
+<label class="checkbox-label"><input type="checkbox" name="tls_enabled" {% if certificate['tls_enabled'] %}checked{% endif %}> Enable deployment checks</label>
+<div class="grid"><label>Connection hostname or IP<input name="tls_host" maxlength="253" value="{{ certificate['tls_host'] }}" placeholder="service.corp.example"></label><label>TLS port<input name="tls_port" type="number" min="1" max="65535" value="{{ certificate['tls_port'] }}"></label></div>
+<label>Certificate hostname / SNI (optional)<input name="tls_server_name" maxlength="253" value="{{ certificate['tls_server_name'] }}" placeholder="Defaults to the connection hostname"></label>
+<p class="muted">Private network services are supported. Loopback, link-local and metadata addresses are blocked. On renewal, these checks follow the successor certificate.</p>
+</fieldset>{% endif %}<button type="submit">Save certificate information</button></form>
+{% else %}<dl>{% for field,label in [('owner','Owner'),('service_name','Service'),('deployment_host','Deployment location'),('environment','Environment'),('tags','Tags'),('notes','Notes')] %}<dt>{{ label }}</dt><dd>{{ certificate[field] or 'Not set' }}</dd>{% endfor %}</dl>{% endif %}
+</section>
+{% if certificate['tls_enabled'] or endpoint_check %}<section class="card"><div class="section-heading"><h2>Deployed certificate</h2><span class="pill {{ 'status-active' if endpoint_check and endpoint_check['status'] == 'current' else 'status-warning' }}">{{ endpoint_check['status'] if endpoint_check else 'Pending check' }}</span></div>
+<p class="mono">{{ certificate['tls_host'] }}:{{ certificate['tls_port'] }}</p>
+{% if endpoint_check %}<p>{{ endpoint_check['detail'] }}</p><dl><dt>Last checked</dt><dd>{{ endpoint_check['checked_at'] }}</dd><dt>Presented subject</dt><dd>{{ endpoint_check['observed_subject'] or 'Unavailable' }}</dd><dt>Presented expiry</dt><dd>{{ endpoint_check['observed_not_after'] or 'Unavailable' }}</dd><dt>Presented SHA-256</dt><dd class="mono">{{ endpoint_check['observed_sha256'] or 'Unavailable' }}</dd></dl>{% else %}<p class="muted">The next monitoring cycle will check this endpoint. Use Monitoring to run a check immediately.</p>{% endif %}
+</section>{% endif %}
+{% endblock %}

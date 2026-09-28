@@ -41,6 +41,12 @@ class KeyStorageWebTests(unittest.TestCase):
     def azure(self):
         return {"backend": "azure", "vault_url": "https://example.vault.azure.net", "tenant_id": "tenant", "client_id": "client", "client_secret": "secret-not-for-display", "key_name": "ca-key", "key_type": "RSA-HSM"}
 
+    def create_external_root(self, config, signer, key_id, name="root"):
+        pinned = {**config, "key_id": key_id, "public_key_sha256": public_key_fingerprint(signer.public_key())}
+        with patch("key_backends.provision_signer", return_value=(signer, pinned)) as provision:
+            self.assertEqual(self.post("/authorities", {"name": name, "role": "root", "common_name": name}).status_code, 302)
+        return pinned, provision.call_args.args[1]
+
     def test_provider_secrets_are_encrypted_and_never_rendered(self):
         self.assertEqual(self.post("/settings/keys", self.azure()).status_code, 302)
         page = self.client.get("/settings/keys")
@@ -91,6 +97,162 @@ class KeyStorageWebTests(unittest.TestCase):
         self.assertEqual(export.status_code, 200)
         self.assertEqual(export.json["format"], "pkimaster-audit-v1")
         self.assertNotIn(b"replacement-secret", export.data)
+
+    def test_revoked_provider_can_be_replaced_without_losing_old_crl_credentials(self):
+        self.post("/settings/keys", self.azure())
+        signer = TestSigner()
+        pinned, _ = self.create_external_root(self.azure(), signer, "https://example.vault.azure.net/keys/ca-key/abc")
+        self.post("/authorities/1/revoke", {"reason": "ca_compromise"})
+        self.assertEqual(self.post("/settings/keys", {"backend": "software"}).status_code, 302)
+        self.post("/authorities", {"name": "replacement", "role": "root", "common_name": "Replacement"})
+        with self.app.app_context():
+            rows = get_db().execute("SELECT * FROM authorities ORDER BY id").fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["key_backend"], "azure")
+            self.assertEqual(json.loads(rows[0]["key_reference"])["key_id"], pinned["key_id"])
+            self.assertEqual(rows[1]["key_backend"], "software")
+            encrypted = get_db().execute("SELECT value FROM settings WHERE key='authority_key_storage:1'").fetchone()[0]
+            self.assertNotIn("secret-not-for-display", encrypted)
+        # A restart still resolves the retired CA with its original credentials.
+        restarted = create_app({"TESTING": True, "INSTANCE_PATH": self.directory.name})
+        with patch("key_backends.load_signer", return_value=signer) as load:
+            response = restarted.test_client().get("/crl/1.crl")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(load.call_args.args[0], "azure")
+        self.assertEqual(load.call_args.args[1]["client_secret"], self.azure()["client_secret"])
+        self.assertEqual(load.call_args.args[1]["key_id"], pinned["key_id"])
+        page = self.client.get("/settings/keys")
+        self.assertIn(b'This CA is permanently bound to Encrypted software key', page.data)
+        self.assertEqual(self.post("/settings/keys", self.azure()).status_code, 400)
+
+    def check_external_replacement(self, config, old_id, new_id):
+        self.assertEqual(self.post("/settings/keys", config).status_code, 302)
+        old_signer, new_signer = TestSigner(), TestSigner()
+        pinned, _ = self.create_external_root(config, old_signer, old_id)
+        self.post("/authorities/1/revoke", {"reason": "ca_compromise"})
+        page = self.client.get("/settings/keys")
+        self.assertIn(b'Save key storage', page.data)
+        self.assertNotIn(old_id.encode(), page.data)
+        _, provisioned_config = self.create_external_root(config, new_signer, new_id, "replacement")
+        self.assertNotIn("key_id", provisioned_config)
+        self.assertNotIn("public_key_sha256", provisioned_config)
+        with self.app.app_context():
+            rows = get_db().execute("SELECT * FROM authorities ORDER BY id").fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertIsNotNone(rows[0]["revoked_at"])
+            self.assertIsNone(rows[1]["revoked_at"])
+            self.assertEqual(json.loads(rows[0]["key_reference"])["key_id"], pinned["key_id"])
+            self.assertEqual(json.loads(rows[1]["key_reference"])["key_id"], new_id)
+        with patch("key_backends.load_signer", return_value=old_signer) as load:
+            self.assertEqual(self.client.get("/crl/1.crl").status_code, 200)
+        self.assertEqual(load.call_args.args[1]["key_id"], old_id)
+        return provisioned_config
+
+    def test_azure_replacement_creates_new_version_of_inherited_key(self):
+        config = self.azure()
+        config["key_name"] = ""
+        old_id = "https://example.vault.azure.net/keys/ca-key/abc"
+        config["azure_key_id"] = old_id
+        actual = self.check_external_replacement(config, old_id, "https://example.vault.azure.net/keys/ca-key/def")
+        self.assertEqual(actual["key_name"], "ca-key")
+        self.assertEqual(actual["client_secret"], config["client_secret"])
+
+    def test_pkcs11_replacement_creates_new_key_in_same_token(self):
+        config = {"backend": "pkcs11", "module_path": str(Path(self.directory.name) / "pkcs11.dll"),
+                  "token_label": "CA token", "token_serial": "original-token", "user_pin": "secret-user-pin"}
+        actual = self.check_external_replacement(config, "abcdef12", "1234abcd")
+        self.assertEqual(actual["token_serial"], config["token_serial"])
+        self.assertEqual(actual["user_pin"], config["user_pin"])
+
+    def test_revoked_key_cannot_be_explicitly_reused_for_new_ca(self):
+        self.post("/settings/keys", self.azure())
+        signer = TestSigner()
+        old_id = "https://example.vault.azure.net/keys/ca-key/abc"
+        pinned, _ = self.create_external_root(self.azure(), signer, old_id)
+        self.post("/authorities/1/revoke", {"reason": "ca_compromise"})
+        self.assertEqual(self.post("/settings/keys", {**self.azure(), "azure_key_id": old_id}).status_code, 302)
+        with self.app.app_context():
+            before = dict(get_db().execute("SELECT key, value FROM settings WHERE key='key_storage_config' OR key GLOB 'authority_key_storage:*'"))
+        with patch("key_backends.provision_signer", return_value=(signer, pinned)):
+            self.post("/authorities", {"name": "replacement", "role": "root", "common_name": "Replacement"})
+        self.assertIn(b"selected signing key belongs to a revoked CA", self.client.get("/").data)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM authorities").fetchone()[0], 1)
+            after = dict(get_db().execute("SELECT key, value FROM settings WHERE key='key_storage_config' OR key GLOB 'authority_key_storage:*'"))
+            self.assertEqual(after, before)
+
+    def test_deleted_external_ca_keeps_key_reuse_blocked_and_can_create_fresh_same_name(self):
+        from key_storage import configuration
+        old_id = "https://example.vault.azure.net/keys/ca-key/abc"
+        config = {**self.azure(), "key_name": "", "azure_key_id": old_id}
+        self.post("/settings/keys", config)
+        old_signer = TestSigner()
+        pinned, _ = self.create_external_root(config, old_signer, old_id)
+        self.post("/authorities/1/revoke", {"reason": "ca_compromise"})
+        self.post("/authorities/1/delete", {"confirmation_name": "root"})
+        with self.app.app_context():
+            db = get_db()
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM authorities").fetchone()[0], 0)
+            self.assertIsNone(db.execute("SELECT value FROM settings WHERE key='authority_key_storage:1'").fetchone())
+            self.assertEqual(db.execute("SELECT public_key_sha256 FROM retired_ca_keys").fetchone()[0], public_key_fingerprint(old_signer.public_key()))
+            saved = configuration()
+            self.assertNotIn("key_id", saved)
+            self.assertNotIn("public_key_sha256", saved)
+            self.assertEqual(saved["key_name"], "ca-key")
+            self.assertEqual(saved["client_secret"], config["client_secret"])
+        self.assertEqual(self.client.get("/crl/1.crl").status_code, 404)
+        # Deletion cannot turn a revoked external key into a usable new identity.
+        self.post("/settings/keys", {**self.azure(), "azure_key_id": old_id})
+        with patch("key_backends.provision_signer", return_value=(old_signer, pinned)):
+            self.post("/authorities", {"name": "root", "role": "root", "common_name": "root"})
+        self.assertIn(b"selected signing key belongs to a revoked CA", self.client.get("/").data)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM authorities").fetchone()[0], 0)
+        self.post("/settings/keys", self.azure())
+        new_signer = TestSigner()
+        self.create_external_root(self.azure(), new_signer, "https://example.vault.azure.net/keys/ca-key/def")
+        with self.app.app_context():
+            authority = get_db().execute("SELECT * FROM authorities").fetchone()
+            self.assertGreater(authority["id"], 1)
+            self.assertEqual(authority["name"], "root")
+            self.assertNotEqual(json.loads(authority["key_reference"])["public_key_sha256"], public_key_fingerprint(old_signer.public_key()))
+
+    def test_delete_archive_removes_snapshot_without_changing_active_provider_binding(self):
+        from key_storage import configuration
+        self.post("/settings/keys", self.azure())
+        self.create_external_root(self.azure(), TestSigner(), "https://example.vault.azure.net/keys/ca-key/abc")
+        self.post("/authorities/1/revoke", {"reason": "superseded"})
+        self.create_external_root(self.azure(), TestSigner(), "https://example.vault.azure.net/keys/ca-key/def", "replacement")
+        with self.app.app_context():
+            db = get_db()
+            before = configuration()
+            self.assertIsNotNone(db.execute("SELECT value FROM settings WHERE key='authority_key_storage:1'").fetchone())
+            replacement = dict(db.execute("SELECT * FROM authorities WHERE id=2").fetchone())
+        self.post("/authorities/1/delete", {"confirmation_name": "root"})
+        with self.app.app_context():
+            db = get_db()
+            self.assertIsNone(db.execute("SELECT value FROM settings WHERE key='authority_key_storage:1'").fetchone())
+            self.assertIsNone(db.execute("SELECT id FROM authorities WHERE id=1").fetchone())
+            self.assertEqual(configuration(), before)
+            self.assertEqual(dict(db.execute("SELECT * FROM authorities WHERE id=2").fetchone()), replacement)
+
+    def test_deleted_pkcs11_archive_does_not_clear_another_tokens_identical_object_id(self):
+        from key_storage import configuration
+        old_config = {"backend": "pkcs11", "module_path": str(Path(self.directory.name) / "pkcs11.dll"),
+                      "token_label": "Old CA token", "token_serial": "original-token", "user_pin": "old-user-pin"}
+        self.post("/settings/keys", old_config)
+        self.create_external_root(old_config, TestSigner(), "abcdef12")
+        self.post("/authorities/1/revoke", {"reason": "superseded"})
+        new_config = {**old_config, "token_label": "New CA token", "token_serial": "new-token", "user_pin": "new-user-pin"}
+        self.post("/settings/keys", new_config)
+        self.create_external_root(new_config, TestSigner(), "abcdef12", "replacement")
+        self.post("/authorities/2/revoke", {"reason": "superseded"})
+        with self.app.app_context():
+            before = configuration()
+        self.post("/authorities/1/delete", {"confirmation_name": "root"})
+        with self.app.app_context():
+            self.assertEqual(configuration(), before)
+            self.assertIsNone(get_db().execute("SELECT id FROM authorities WHERE id=1").fetchone())
 
     def test_corrupt_audit_blocks_mutations_and_restart(self):
         with self.app.app_context():

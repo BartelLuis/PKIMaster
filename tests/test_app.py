@@ -66,6 +66,20 @@ class PKIMasterTestCase(unittest.TestCase):
             row = get_db().execute("SELECT * FROM authorities").fetchone()
             return dict(row) if row else None
 
+    def test_public_gets_do_not_verify_the_complete_audit_history(self):
+        token = self.form_token(self.get("/"))
+        with self.app.app_context():
+            db = get_db()
+            db.execute("DROP TRIGGER audit_no_update")
+            db.execute("UPDATE audit_events SET detail = 'tampered' WHERE id = (SELECT MIN(id) FROM audit_events)")
+            db.commit()
+
+        anonymous = self.app.test_client()
+        self.assertEqual(anonymous.get("/auth/oidc/callback", base_url=self.base_url).status_code, 400)
+        self.assertEqual(anonymous.get("/crl/9223372036854775807.crl", base_url=self.base_url).status_code, 404)
+        self.assertEqual(self.client.post("/logout", base_url=self.base_url,
+                                         data={"csrf_token": token}).status_code, 503)
+
     def count(self, table):
         with self.app.app_context():
             return get_db().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -140,7 +154,7 @@ class PKIMasterTestCase(unittest.TestCase):
         request = x509.load_pem_x509_csr(self.get("/authorities/1/csr").data)
         self.assertTrue(request.is_signature_valid)
         self.assertEqual(request.public_key().key_size, 3072)
-        self.assertEqual(request.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length, 0)
+        self.assertIsNone(request.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
         for path in ("/authorities/1/cert", "/authorities/1/chain", "/crl/1.crl"):
             with self.subTest(path=path):
                 self.assertEqual(self.get(path).status_code, 409)

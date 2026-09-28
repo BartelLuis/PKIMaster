@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule PKIMaster external publication every minute
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=1s
+Persistent=true
+Unit=pkimaster-publication.service
+
+[Install]
+WantedBy=timers.target

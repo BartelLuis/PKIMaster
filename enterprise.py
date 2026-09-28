@@ -138,7 +138,7 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                         for row in connection.execute(f"SELECT {column} FROM users WHERE {column} IS NOT NULL"):
                             cipher.decrypt(row[0].encode("utf-8"))
             if "settings" in tables:
-                for row in connection.execute("SELECT value FROM settings WHERE key = 'key_storage_config'"):
+                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config', 'monitoring_config', 'automation_config') OR key GLOB 'authority_key_storage:*'"):
                     cipher.decrypt(row[0].encode("utf-8"))
             if "identity_settings" in tables:
                 for row in connection.execute("SELECT payload FROM identity_settings"):
@@ -148,6 +148,9 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                             cipher.decrypt(payload[field].encode("utf-8"))
             if "oidc_flows" in tables:
                 for row in connection.execute("SELECT payload FROM oidc_flows"):
+                    cipher.decrypt(row[0].encode("utf-8"))
+            if "acme_eab" in tables:
+                for row in connection.execute("SELECT secret FROM acme_eab WHERE secret<>''"):
                     cipher.decrypt(row[0].encode("utf-8"))
     except (sqlite3.Error, InvalidToken, ValueError, AttributeError) as exc:
         raise RuntimeError("The supplied encryption secret cannot decrypt the existing PKI. Restore the original secret before migrating.") from exc
@@ -383,8 +386,8 @@ def init_enterprise(app) -> None:
         from identity import init_identity
         init_identity(connection)
     app.register_blueprint(enterprise)
-    from mfa import mfa
-    app.register_blueprint(mfa)
+    from mfa import init_mfa
+    init_mfa(app)
     from identity import identity, public_config, user_allowed
     app.register_blueprint(identity)
 
@@ -395,15 +398,19 @@ def init_enterprise(app) -> None:
         endpoint = request.endpoint
         if endpoint is None:
             return None
-        if endpoint in {"healthz", "static", "download_crl"} and request.method in {"GET", "HEAD", "OPTIONS"}:
+        # ACME has signed JWS requests, one-use nonces and account authorization.
+        # Its admin UI continues to require the normal browser session and MFA.
+        if request.blueprint == "acme_protocol":
+            return None
+        if endpoint in {"healthz", "static", "download_crl", "publication.aia"} and request.method in {"GET", "HEAD", "OPTIONS"}:
             return None
         installed = _db().execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
         if not installed:
             if not _local_setup_request():
                 return Response("Initial setup is available only from localhost. Connect through a local browser or an SSH tunnel.", status=403)
-            if endpoint != "enterprise.setup":
+            if endpoint not in {"enterprise.setup", "backup.restore"}:
                 return redirect(url_for("enterprise.setup"))
-        elif endpoint == "enterprise.setup":
+        elif endpoint in {"enterprise.setup", "backup.restore"}:
             return Response("Initial setup has already been completed.", status=404)
         user_id = session.get("user_id")
         if user_id:
@@ -430,13 +437,15 @@ def init_enterprise(app) -> None:
                 return Response("Cross-origin form submission is not allowed.", status=403)
             if not validate_csrf():
                 return Response("The form expired or its security token is invalid. Reload the page and try again.", status=403)
-        factor_endpoints = {"mfa.enroll", "mfa.challenge", "enterprise.logout"}
+        factor_endpoints = {"mfa.enroll", "mfa.challenge", "mfa.recover", "mfa.replace", "enterprise.logout"}
         if g.user and not (session.get("mfa_verified") is True and g.user["mfa_secret"]) and endpoint not in factor_endpoints:
             return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
-        admin_endpoints = {"create_authority", "revoke_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
+        admin_endpoints = {"create_authority", "revoke_authority", "delete_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
                            "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
-                           "identity.settings", "key_storage.settings", "security.policy"}
-        operator_endpoints = {"create_certificate", "revoke_certificate"}
+                           "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now",
+                           "backup.settings", "backup.export", "monitoring.settings", "monitoring.check_now",
+                           "certificate_profiles.manage", "automation.settings", "automation.run_now", "acme_admin.settings"}
+        operator_endpoints = {"create_certificate", "revoke_certificate", "renewal.renew", "inventory.update_metadata"}
         if endpoint in admin_endpoints and not can_manage("admin"):
             abort(403)
         if endpoint in operator_endpoints and not can_manage("admin", "operator"):
@@ -444,7 +453,7 @@ def init_enterprise(app) -> None:
         if endpoint in {"download_authority", "download_certificate"} and (request.view_args or {}).get("artifact") == "key":
             if not can_manage("admin") or not get_setting("allow_key_export"):
                 abort(403)
-        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password", "identity.oidc_start"}
+        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password", "identity.oidc_start", "mfa.account", "backup.restore"}
         if request.method not in {"GET", "HEAD", "OPTIONS"} and endpoint not in known_mutations:
             abort(403)
 
@@ -460,7 +469,7 @@ def init_enterprise(app) -> None:
             if origin:
                 form_action += " " + origin
         response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; form-action " + form_action + "; frame-ancestors 'none'; base-uri 'self'")
-        if request.endpoint not in {"static", "download_crl"}:
+        if request.endpoint not in {"static", "download_crl", "publication.aia"}:
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -486,6 +495,10 @@ def setup():
             password_hash = generate_password_hash(password)
             db = _db()
             db.execute("BEGIN IMMEDIATE")
+            from backup import restore_pending
+            if restore_pending(Path(current_app.config["INSTANCE_PATH"])):
+                db.rollback()
+                return Response("Recovery is in progress. Wait for the service to restart.", status=503)
             if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
                 db.rollback()
                 abort(404)
@@ -501,10 +514,10 @@ def setup():
             db.commit()
             _start_session(g.user)
             session["mfa_enrollment_authorized"] = True
-            flash("Installation complete. Enroll your authenticator to finish securing the administrator account.")
+            flash("Installation complete. Enroll your authenticator to finish securing the administrator account.", "success")
             return redirect(url_for("mfa.enroll"))
         except ValueError as exc:
-            flash(str(exc))
+            flash(str(exc), "error")
             return render_template("setup.html", title="Set up PKIMaster"), 400
     return render_template("setup.html", title="Set up PKIMaster")
 
@@ -544,16 +557,18 @@ def settings():
             _write_settings(values)
             if previous_crl_days != values["crl_days"]:
                 _db().execute("UPDATE crls SET next_update = NULL")
+                from publication import queue_publication
+                queue_publication(_db())
             audit_event("settings.updated", "settings", "", json.dumps(values, sort_keys=True))
             if tls_pem:
                 _install_tls(tls_pem)
                 audit_event("settings.https_certificate_updated", "settings")
             _db().commit()
-            flash("Settings saved. The packaged HTTPS service restarts automatically when its listener or certificate changes; reconnect at the configured address and port.")
+            flash("Settings saved. The packaged HTTPS service restarts automatically when its listener or certificate changes; reconnect at the configured address and port.", "success")
             return redirect(url_for("enterprise.settings"))
         except ValueError as exc:
             _db().rollback()
-            flash(str(exc))
+            flash(str(exc), "error")
             return render_template("settings.html", title="Settings"), 400
     return render_template("settings.html", title="Settings")
 
@@ -625,11 +640,11 @@ def users():
             else:
                 raise ValueError("Unknown user action.")
             db.commit()
-            flash("User account updated.")
+            flash("User account updated.", "success")
             return redirect(url_for("enterprise.users"))
         except (ValueError, sqlite3.IntegrityError) as exc:
             db.rollback()
-            flash("That username or external identity is already in use." if isinstance(exc, sqlite3.IntegrityError) else str(exc))
+            flash("That username or external identity is already in use." if isinstance(exc, sqlite3.IntegrityError) else str(exc), "error")
             return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active, auth_source, external_issuer, external_subject FROM users ORDER BY username").fetchall()), 400
     return render_template("users.html", title="Users", users=db.execute("SELECT id, username, role, active, auth_source, external_issuer, external_subject FROM users ORDER BY username").fetchall())
 
@@ -651,10 +666,10 @@ def password():
             audit_event("user.password_changed", "user", str(g.user["id"]))
             _db().commit()
             session.clear()
-            flash("Password changed. Sign in again; all previous sessions have been revoked.")
+            flash("Password changed. Sign in again; all previous sessions have been revoked.", "success")
             return redirect(url_for("enterprise.login"))
         except ValueError as exc:
-            flash(str(exc))
+            flash(str(exc), "error")
             return render_template("login.html", title="Change password", change_password=True), 400
     return render_template("login.html", title="Change password", change_password=True)
 

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Archive verified</span>
+  <h1>Recovery is prepared</h1>
+  <p>The archive's database, audit history and encrypted credentials passed verification. The packaged HTTPS service will now restart and install the recovered state.</p>
+  {% if details.authorities %}<p>CA records: {{ details.authorities|join(', ') }}.</p>{% endif %}
+  {% if details.external_keys %}<p class="notice">This installation uses an external key provider. Verify provider access on this host before issuing certificates.</p>{% endif %}
+  <p>Wait a few seconds, then <a href="{{ url_for('enterprise.login') }}">sign in with a restored account</a>. Use its existing authenticator or an unused recovery code. Previous browser sessions are invalidated.</p>
+  <p>The destination HTTPS address and port stay the same. The restored HTTPS certificate may require your browser to reconnect. Review public URLs, publication destinations, monitoring and provider access before resuming operation.</p>
+  <p class="form-hint">For a custom WSGI deployment, stop every application and background worker and follow the offline recovery steps in the backup documentation before restarting.</p>
+</section>
+{% endblock %}

@@ -13,4 +13,10 @@ override_dh_auto_test:
 override_dh_auto_install:
 
 override_dh_installsystemd:
+	install -D -m 0644 debian/pkimaster-publication.service debian/pkimaster/usr/lib/systemd/system/pkimaster-publication.service
+	install -D -m 0644 debian/pkimaster-publication.timer debian/pkimaster/usr/lib/systemd/system/pkimaster-publication.timer
+	install -D -m 0644 debian/pkimaster-monitoring.service debian/pkimaster/usr/lib/systemd/system/pkimaster-monitoring.service
+	install -D -m 0644 debian/pkimaster-monitoring.timer debian/pkimaster/usr/lib/systemd/system/pkimaster-monitoring.timer
+	install -D -m 0644 debian/pkimaster-automation.service debian/pkimaster/usr/lib/systemd/system/pkimaster-automation.service
+	install -D -m 0644 debian/pkimaster-automation.timer debian/pkimaster/usr/lib/systemd/system/pkimaster-automation.timer
 	dh_installsystemd --restart-after-upgrade

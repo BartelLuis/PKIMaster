@@ -105,7 +105,7 @@ class CertificateLifecycleTests(unittest.TestCase):
         self.assertEqual(self.root.public_key().key_size, 4096)
         self.assertEqual(self.root.public_key().public_numbers(), self.root_key.public_key().public_numbers())
         self.root.verify_directly_issued_by(self.root)
-        self.assertEqual(self.root.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length, 2)
+        self.assertIsNone(self.root.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
         usage = self.root.extensions.get_extension_for_class(x509.KeyUsage).value
         self.assertTrue(usage.key_cert_sign)
         self.assertTrue(usage.crl_sign)
@@ -224,13 +224,44 @@ class CertificateLifecycleTests(unittest.TestCase):
     def test_actual_parent_path_constraint_and_expiry_limit_child(self):
         issuer_pem, key_pem = self.issuer_with_constraints(path_length=1, days=1)
         issuer = x509.load_pem_x509_certificate(issuer_pem.encode())
-        result = pki.create_ca_certificate("Limited Intermediate", 100, "intermediate", "root", issuer_pem, key_pem)
+        result = pki.create_ca_certificate("Limited Issuing", 100, "issuing", "intermediate", issuer_pem, key_pem,
+                                           issuer_chain_pem=self.root_pem)
         child = x509.load_pem_x509_certificate(result[0].encode())
-        self.assertEqual(child.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length, 0)
+        self.assertIsNone(child.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
         self.assertEqual(child.not_valid_after_utc, issuer.not_valid_after_utc)
         child.verify_directly_issued_by(issuer)
+        issuer_pem, key_pem = self.issuer_with_constraints(path_length=0)
         with self.assertRaisesRegex(ValueError, "path length"):
-            pki.create_ca_certificate("Forbidden Issuing", 1, "issuing", "intermediate", result[0], result[1])
+            pki.create_ca_certificate("Forbidden Issuing", 1, "issuing", "intermediate", issuer_pem, key_pem,
+                                      issuer_chain_pem=self.root_pem)
+
+    def test_local_subordinate_certificates_omit_path_length(self):
+        intermediate = pki.create_ca_certificate("Unbounded Intermediate", 5, "intermediate", "root",
+                                                self.root_pem, self.root_key_pem)
+        issuing = pki.create_ca_certificate("Unbounded Issuing", 3, "issuing", "intermediate",
+                                           intermediate[0], intermediate[1], issuer_chain_pem=self.root_pem)
+        for result in (intermediate, issuing):
+            certificate = x509.load_pem_x509_certificate(result[0].encode())
+            self.assertIsNone(certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.path_length)
+
+    def test_local_subordinate_requires_issuer_chain(self):
+        issuer_pem, key_pem = self.issuer_with_constraints(path_length=None)
+        with self.assertRaises(ValueError):
+            pki.create_ca_certificate("Missing Parent", 1, "issuing", "intermediate", issuer_pem, key_pem)
+
+    def test_local_subordinate_honors_bounded_ancestor_above_unbounded_parent(self):
+        root = (x509.CertificateBuilder()
+            .subject_name(self.root.subject).issuer_name(self.root.subject)
+            .public_key(self.root_key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(self.root.not_valid_before_utc).not_valid_after(self.root.not_valid_after_utc)
+            .add_extension(x509.BasicConstraints(True, 1), critical=True)
+            .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
+            .sign(self.root_key, hashes.SHA256()))
+        root_pem = pki.serialize_certificate(root)
+        issuer_pem, key_pem = self.issuer_with_constraints(path_length=None)
+        with self.assertRaisesRegex(ValueError, "path length"):
+            pki.create_ca_certificate("Too Deep", 1, "issuing", "intermediate", issuer_pem, key_pem,
+                                      issuer_chain_pem=root_pem)
 
     def test_role_and_missing_issuer_constraints_are_rejected(self):
         for arguments in (

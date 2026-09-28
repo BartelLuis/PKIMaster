@@ -33,12 +33,17 @@ LOGGER = logging.getLogger("pkimaster.runtime")
 
 def runtime_application(instance_path: Path = STATE_DIRECTORY):
     from app import create_app
+    from backup import RestoreBusy, _worker_lock, restore_pending
 
-    return create_app({
-        "INSTANCE_PATH": str(instance_path),
-        "DATABASE": str(instance_path / "pkimaster.sqlite"),
-        "SESSION_COOKIE_SECURE": True,
-    })
+    instance_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with _worker_lock(instance_path / "runtime-startup.lock"):
+        if restore_pending(instance_path):
+            raise RestoreBusy("Recovery is pending; application startup is deferred until installation finishes.")
+        return create_app({
+            "INSTANCE_PATH": str(instance_path),
+            "DATABASE": str(instance_path / "pkimaster.sqlite"),
+            "SESSION_COOKIE_SECURE": True,
+        })
 
 
 def _atomic_write(path: Path, contents: bytes) -> None:
@@ -122,8 +127,17 @@ def _ssl_context(config, default_ssl_context_factory):
 
 def serve(instance_path: Path = STATE_DIRECTORY, runtime_config: dict | None = None) -> None:
     from gunicorn.app.base import BaseApplication
+    from backup import RestoreBusy
 
-    application = runtime_application(instance_path)
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            application = runtime_application(instance_path)
+            break
+        except RestoreBusy:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
     if runtime_config is None:
         host, port = read_listener(instance_path)
         bundle = tls_bundle(instance_path)
@@ -282,7 +296,14 @@ def _start_child(configuration: _Configuration) -> subprocess.Popen:
 def supervise() -> None:
     """Apply saved web listener/TLS changes without granting the app root access."""
     os.umask(0o077)
-    runtime_application()
+    from backup import RestoreBusy, apply_pending_restore, restore_pending
+    while True:
+        try:
+            apply_pending_restore(STATE_DIRECTORY)
+            runtime_application()
+            break
+        except RestoreBusy:
+            time.sleep(0.5)
     remembered = _remembered_configuration(STATE_DIRECTORY)
     try:
         active = _configuration(STATE_DIRECTORY)
@@ -298,6 +319,24 @@ def supervise() -> None:
     rejected = None
     try:
         while not stopping.is_set():
+            if restore_pending(STATE_DIRECTORY):
+                if child is not None:
+                    _stop_child(child)
+                    child = None
+                try:
+                    apply_pending_restore(STATE_DIRECTORY)
+                except RestoreBusy:
+                    stopping.wait(0.5)
+                    continue
+                try:
+                    runtime_application()
+                except RestoreBusy:
+                    stopping.wait(0.5)
+                    continue
+                active = _configuration(STATE_DIRECTORY)
+                remembered = None
+                rejected = None
+                LOGGER.info("Recovered installation verified; restarting the HTTPS service.")
             if child is None or child.poll() is not None:
                 if child is not None:
                     LOGGER.error("HTTPS worker exited with status %s; restarting.", child.returncode)

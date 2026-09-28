@@ -10,6 +10,6 @@
     <button type="submit">Verify code and sign in</button>
   </form>
   <p class="muted">Each code can be used once. If you have just signed in elsewhere, wait for the next code. Keep your authenticator clock synchronized.</p>
-  <p class="notice">A lost authenticator requires your protected enrollment backup. This version has no automated MFA reset or recovery codes.</p>
+  <p><a href="{{ url_for('mfa.recover') }}">Lost your authenticator? Use a recovery code</a></p>
 </section>
 {% endblock %}

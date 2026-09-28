@@ -2,7 +2,7 @@ PKIMaster for Debian 13
 ======================
 
 Install the package with:
-  sudo apt install ./pkimaster_0.2.0-1_all.deb
+  sudo apt install ./pkimaster_0.4.0-1_all.deb
 
 Open https://127.0.0.1:8443/setup on the server, or forward the console from
 your workstation:
@@ -16,10 +16,22 @@ restart the HTTPS workers. This can briefly interrupt browser connections.
 No environment secrets or human-edited configuration files are required.
 
 Runtime state, including encrypted CA keys, generated encryption secrets,
-accounts and audit events, lives in /var/lib/pkimaster (mode 0700). Back up this
-entire directory consistently while the service is stopped; the database
+accounts and audit events, lives in /var/lib/pkimaster (mode 0700). Use Backup
+& restore for encrypted snapshots and localhost recovery on a fresh host.
+For manual filesystem copies stop the web service and publication/monitoring/automation
+timers and workers, and copy the entire directory consistently; the database
 alone is insufficient to recover encrypted keys. State and the dedicated
 _pkimaster system account are retained on both package removal and purge.
+
+The monitoring timer checks expiry and configured public CRLs every five
+minutes. Configure SMTP or webhook delivery under Monitoring & alerts.
+See BACKUP.md and MONITORING.md in /usr/share/doc/pkimaster for procedures.
+
+The automation timer handles configured parent CRL synchronization, encrypted
+SFTP backups and external audit archives. Configure Automation and keep the
+downloaded private recovery key separately. See AUTOMATION.md for recovery.
+ACME enrollment is opt-in and requires an explicitly scoped certificate
+template and external account binding. See ACME.md for client setup.
 
 The service runs as _pkimaster with systemd sandboxing. Logs are available via:
   journalctl -u pkimaster

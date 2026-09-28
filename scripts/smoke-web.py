@@ -35,6 +35,15 @@ def get(path):
         return response.read().decode("utf-8")
 
 
+def assert_not_found(path):
+    try:
+        get(path)
+    except urllib.error.HTTPError as error:
+        assert error.code == 404, f"Expected a deleted artifact at {path} to return 404, got {error.code}."
+    else:
+        raise AssertionError(f"Deleted artifact is still available at {path}.")
+
+
 def post(path, values, token_page=None):
     page = get(token_page or path)
     token = re.search(r'name="csrf_token" value="([^"]+)"', page)
@@ -98,22 +107,70 @@ def complete_authentication(credentials, page=None):
     page = post("/mfa/enroll" if enrollment else "/mfa/challenge", {"code": totp(credentials["mfa_secret"], code_time)})
     assert "Local certificate authority" in page, "Mandatory MFA did not complete."
     credential_file.write_text(json.dumps(credentials), encoding="utf-8")
+    for path, expected in (("/account/security", "Recovery codes"), ("/settings/backup", "Create an encrypted backup"),
+                           ("/monitoring", "Monitoring &amp; alerts"), ("/monitoring/settings", "Monitoring settings")):
+        assert expected in get(path), f"Installed feature page is unavailable: {path}"
 
 
 if verify_upgrade:
     credentials = json.loads(credential_file.read_text(encoding="utf-8"))
     post("/login", {key: credentials[key] for key in ("username", "password")})
     complete_authentication(credentials)
-    # A fresh signed CRL proves that the retained secret decrypts the only CA key.
-    certificate = x509.load_pem_x509_certificate(get("/authorities/1/cert").encode())
+    # A fresh signed CRL proves that the retained secret decrypts the original CA key.
+    original_pem = get("/authorities/1/cert")
+    original_chain = get("/authorities/1/chain")
+    certificate = x509.load_pem_x509_certificate(original_pem.encode())
     crl = x509.load_pem_x509_crl(get("/crl/1.crl?format=pem").encode())
     assert crl.is_signature_valid(certificate.public_key()), "Original CA signing key was not retained."
     page = post("/authorities", {
         "name": "Smoke issuing CA", "role": "issuing",
         "common_name": "Smoke issuing CA", "validity_days": "180",
     }, token_page="/")
-    assert "Only one CA is permitted per server" in page, "A second local CA must be rejected."
-    print("Upgrade preserves MFA and the original CA key; a second local CA is rejected.")
+    assert "Only one CA may be current on this server" in page, "A second current local CA must be rejected."
+
+    # Run replacement only after checking the upgraded service's original identity.
+    # The package smoke test snapshots runtime secrets and HTTPS identity; these
+    # must remain unchanged while CA history grows in the retained database.
+    post("/authorities/1/revoke", {"reason": "superseded"}, token_page="/authorities/1")
+    page = get("/")
+    assert "Initialize this server's CA" in page, "Revocation must make CA initialization available again."
+    assert "Revoked CA archive" in page, "The original CA must remain visible in the archive."
+    assert "Local CA boundary</span><strong>0 / 1</strong>" in get("/security"), "A revoked CA must not occupy the current CA slot."
+    page = post("/authorities", {
+        "name": "Smoke Replacement Root CA", "role": "root", "common_name": "Smoke Replacement Root CA",
+        "validity_days": "365",
+    }, token_page="/")
+    assert "Created root CA" in page, "The installed package must initialize a replacement after revocation."
+    assert "Revoked CA archive" in page, "Replacement must preserve the original CA archive."
+    assert "Local CA boundary</span><strong>1 / 1</strong>" in get("/security"), "Only the replacement CA must occupy the current slot."
+    replacement = x509.load_pem_x509_certificate(get("/authorities/2/cert").encode())
+    assert replacement.serial_number != certificate.serial_number, "A replacement must receive a new certificate."
+    assert replacement.public_key().public_numbers() != certificate.public_key().public_numbers(), "A replacement must receive a new key."
+    replacement_crl = x509.load_pem_x509_crl(get("/crl/2.crl?format=pem").encode())
+    assert replacement_crl.is_signature_valid(replacement.public_key()), "The replacement CA must sign its own CRL."
+    assert get("/authorities/1/cert") == original_pem, "Replacement must preserve the original CA certificate."
+    assert get("/authorities/1/chain") == original_chain, "Replacement must preserve the original CA chain."
+    archived_crl = x509.load_pem_x509_crl(get("/crl/1.crl?format=pem").encode())
+    assert archived_crl.is_signature_valid(certificate.public_key()), "The archived CA must retain its original CRL signing key."
+
+    # Explicit deletion is separate from revocation and frees the old display name.
+    page = get("/authorities/1")
+    assert 'name="confirmation_name"' in page, "A revoked CA must offer typed-name deletion confirmation."
+    post("/authorities/1/delete", {"confirmation_name": "Wrong CA"}, token_page="/authorities/1")
+    assert get("/authorities/1/cert") == original_pem, "An incorrect confirmation name must not delete the CA."
+    post("/authorities/1/delete", {"confirmation_name": "Smoke Root CA"}, token_page="/authorities/1")
+    for path in ("/authorities/1", "/authorities/1/cert", "/authorities/1/chain", "/crl/1.crl", "/aia/1.cer"):
+        assert_not_found(path)
+    assert x509.load_pem_x509_certificate(get("/authorities/2/cert").encode()) == replacement, "Deleting an archive must preserve the current CA."
+    post("/authorities/2/revoke", {"reason": "superseded"}, token_page="/authorities/2")
+    page = post("/authorities", {
+        "name": "Smoke Root CA", "role": "root", "common_name": "Smoke Root CA", "validity_days": "365",
+    }, token_page="/")
+    assert "Created root CA" in page, "A deleted CA's display name must be reusable."
+    reused_name = x509.load_pem_x509_certificate(get("/authorities/3/cert").encode())
+    assert reused_name.public_key().public_numbers() != certificate.public_key().public_numbers(), "Reusing a display name must generate a new key."
+    assert get("/authorities/2/cert"), "An undeleted revoked CA must remain archived."
+    print("Upgrade preserves MFA and CA keys; replacement retains archives; explicit deletion removes artifacts and frees the display name.")
 else:
     credentials = {"username": "smoke-admin", "password": secrets.token_urlsafe(32)}
     credential_file.write_text(json.dumps(credentials), encoding="utf-8")
