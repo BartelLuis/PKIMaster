@@ -80,9 +80,11 @@ class TLSMonitoringHandshakeTests(unittest.TestCase):
                     try:
                         with context.wrap_socket(raw, server_side=True):
                             pass
-                    except ssl.SSLError:
-                        # The mismatch/untrusted-client cases abort the actual
-                        # handshake with a TLS certificate verification alert.
+                    except (ssl.SSLError, ConnectionResetError, ConnectionAbortedError):
+                        # Certificate rejection sends a TLS alert. Windows may
+                        # also reset the connection when the inspection client
+                        # closes after reading the certificate, before the
+                        # server finishes sending TLS 1.3 session tickets.
                         pass
             except BaseException as error:
                 observed["errors"].append(error)
