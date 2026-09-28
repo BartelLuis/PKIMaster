@@ -1,0 +1,12 @@
+[Unit]
+Description=Run configured PKIMaster automation every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=10s
+RandomizedDelaySec=15s
+Persistent=true
+Unit=pkimaster-automation.service
+
+[Install]
+WantedBy=timers.target

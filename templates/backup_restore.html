@@ -8,9 +8,13 @@
   <form method="post" enctype="multipart/form-data" action="{{ url_for('backup.restore') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Encrypted backup <input type="file" name="archive" accept=".pkibackup" required></label>
-    <label>Backup passphrase <input type="password" name="passphrase" minlength="20" maxlength="256" autocomplete="off" required></label>
+    <label>Backup/key passphrase<input type="password" name="passphrase" maxlength="256" autocomplete="off"></label>
+    <label>Private recovery key (scheduled backups)<input type="file" name="recovery_key" accept=".pem"></label>
+    <p class="muted">For a manual backup, enter its passphrase. For a scheduled backup, upload the private recovery key saved when automatic backups were configured.</p>
+    <label>Expected SHA-256 (optional)<input type="text" name="expected_sha256" minlength="64" maxlength="64" pattern="[a-fA-F0-9]{64}" autocomplete="off" spellcheck="false"></label>
+    <p class="form-hint">Use a backup from a trusted source. Compare its SHA-256 with a value recorded independently of the backup server; encryption alone does not prove who created a scheduled backup.</p>
     <label class="checkbox-label"><input type="checkbox" name="source_stopped" required> The original installation is stopped. This host will be the only active copy of its CA.</label>
-    <p class="form-hint">The archive is authenticated, and its database, audit chain and encrypted keys are checked before any installation files are replaced. Maximum archive size: 128 MiB.</p>
+    <p class="form-hint">Archive integrity, database consistency, the audit chain and encrypted keys are checked before any installation files are replaced. Maximum archive size: 128 MiB.</p>
     <button type="submit">Verify and restore installation</button>
   </form>
   <p><a href="{{ url_for('enterprise.setup') }}">Back to initial setup</a></p>

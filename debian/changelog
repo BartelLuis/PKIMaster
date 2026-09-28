@@ -1,3 +1,15 @@
+pkimaster (0.4.0-1) trixie; urgency=medium
+
+  * Add controlled ACME enrollment, issuance, renewal and account management.
+  * Enforce configurable certificate templates across browser and ACME issuance.
+  * Track certificate owners, deployments, environments and tags with CSV export.
+  * Verify certificates deployed on TLS services and report pending replacements.
+  * Synchronize parent CRLs and archive encrypted backups and audit evidence.
+  * Redesign the web console with responsive navigation and persistent dark mode.
+  * Add a hardened automation timer and publish through the signed APT repository.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Mon, 28 Sep 2026 20:00:00 +0200
+
 pkimaster (0.3.0-1) trixie; urgency=medium
 
   * Add encrypted complete backups and a fresh-host restore assistant.

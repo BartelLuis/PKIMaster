@@ -25,11 +25,13 @@ trap cleanup EXIT INT TERM
 
 start_service() {
     if [ -d /run/systemd/system ]; then
-        systemctl start pkimaster pkimaster-publication.timer pkimaster-monitoring.timer
+        systemctl start pkimaster pkimaster-publication.timer pkimaster-monitoring.timer pkimaster-automation.timer
         systemctl is-enabled --quiet pkimaster-publication.timer
         systemctl is-active --quiet pkimaster-publication.timer
         systemctl is-enabled --quiet pkimaster-monitoring.timer
         systemctl is-active --quiet pkimaster-monitoring.timer
+        systemctl is-enabled --quiet pkimaster-automation.timer
+        systemctl is-active --quiet pkimaster-automation.timer
     else
         runuser -u _pkimaster -- python3 /usr/lib/pkimaster/pkimaster_server.py >"$temporary/service.log" 2>&1 &
         service_pid=$!
@@ -46,8 +48,8 @@ start_service() {
 }
 stop_service() {
     if [ -d /run/systemd/system ]; then
-        systemctl stop pkimaster-publication.timer pkimaster-monitoring.timer
-        systemctl stop pkimaster-publication.service pkimaster-monitoring.service pkimaster
+        systemctl stop pkimaster-publication.timer pkimaster-monitoring.timer pkimaster-automation.timer
+        systemctl stop pkimaster-publication.service pkimaster-monitoring.service pkimaster-automation.service pkimaster
     elif [ -n "$service_pid" ]; then
         kill "$service_pid"
         wait "$service_pid" || true
@@ -56,7 +58,7 @@ stop_service() {
 }
 
 apt-get install -y "$package"
-systemd-analyze verify /usr/lib/systemd/system/pkimaster.service /usr/lib/systemd/system/pkimaster-publication.service /usr/lib/systemd/system/pkimaster-publication.timer /usr/lib/systemd/system/pkimaster-monitoring.service /usr/lib/systemd/system/pkimaster-monitoring.timer
+systemd-analyze verify /usr/lib/systemd/system/pkimaster.service /usr/lib/systemd/system/pkimaster-publication.service /usr/lib/systemd/system/pkimaster-publication.timer /usr/lib/systemd/system/pkimaster-monitoring.service /usr/lib/systemd/system/pkimaster-monitoring.timer /usr/lib/systemd/system/pkimaster-automation.service /usr/lib/systemd/system/pkimaster-automation.timer
 start_service
 curl --silent --fail --cacert /var/lib/pkimaster/server-tls/bootstrap.pem https://127.0.0.1:8443/setup >"$temporary/setup.html"
 grep -q 'csrf_token' "$temporary/setup.html"
@@ -66,6 +68,8 @@ runuser -u _pkimaster -- python3 /usr/lib/pkimaster/publication_worker.py >"$tem
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1])) == {"status": "disabled"}' "$temporary/publication.json"
 runuser -u _pkimaster -- python3 /usr/lib/pkimaster/monitoring_worker.py >"$temporary/monitoring.json"
 python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); assert result["status"] == "checked"' "$temporary/monitoring.json"
+runuser -u _pkimaster -- python3 /usr/lib/pkimaster/automation_worker.py >"$temporary/automation.json"
+python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); assert result["status"] == "disabled"' "$temporary/automation.json"
 test "$(stat -c %a /var/lib/pkimaster)" = 700
 test "$(stat -c %a /var/lib/pkimaster/server-tls/bootstrap.pem)" = 600
 sha256sum /var/lib/pkimaster/runtime-secrets.json /var/lib/pkimaster/server-tls/bootstrap.pem >"$temporary/identity.sha256"
@@ -83,7 +87,7 @@ apt-get remove -y pkimaster
 sha256sum --check "$temporary/identity.sha256"
 apt-get purge -y pkimaster
 if [ -d /run/systemd/system ]; then
-    if systemctl is-active --quiet pkimaster-publication.timer || systemctl is-active --quiet pkimaster-monitoring.timer; then
+    if systemctl is-active --quiet pkimaster-publication.timer || systemctl is-active --quiet pkimaster-monitoring.timer || systemctl is-active --quiet pkimaster-automation.timer; then
         echo 'A PKIMaster timer remained active after package purge.' >&2
         exit 1
     fi

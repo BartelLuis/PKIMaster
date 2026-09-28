@@ -138,7 +138,7 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                         for row in connection.execute(f"SELECT {column} FROM users WHERE {column} IS NOT NULL"):
                             cipher.decrypt(row[0].encode("utf-8"))
             if "settings" in tables:
-                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config', 'monitoring_config') OR key GLOB 'authority_key_storage:*'"):
+                for row in connection.execute("SELECT value FROM settings WHERE key IN ('key_storage_config', 'publication_config', 'monitoring_config', 'automation_config') OR key GLOB 'authority_key_storage:*'"):
                     cipher.decrypt(row[0].encode("utf-8"))
             if "identity_settings" in tables:
                 for row in connection.execute("SELECT payload FROM identity_settings"):
@@ -148,6 +148,9 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
                             cipher.decrypt(payload[field].encode("utf-8"))
             if "oidc_flows" in tables:
                 for row in connection.execute("SELECT payload FROM oidc_flows"):
+                    cipher.decrypt(row[0].encode("utf-8"))
+            if "acme_eab" in tables:
+                for row in connection.execute("SELECT secret FROM acme_eab WHERE secret<>''"):
                     cipher.decrypt(row[0].encode("utf-8"))
     except (sqlite3.Error, InvalidToken, ValueError, AttributeError) as exc:
         raise RuntimeError("The supplied encryption secret cannot decrypt the existing PKI. Restore the original secret before migrating.") from exc
@@ -395,6 +398,10 @@ def init_enterprise(app) -> None:
         endpoint = request.endpoint
         if endpoint is None:
             return None
+        # ACME has signed JWS requests, one-use nonces and account authorization.
+        # Its admin UI continues to require the normal browser session and MFA.
+        if request.blueprint == "acme_protocol":
+            return None
         if endpoint in {"healthz", "static", "download_crl", "publication.aia"} and request.method in {"GET", "HEAD", "OPTIONS"}:
             return None
         installed = _db().execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
@@ -436,8 +443,9 @@ def init_enterprise(app) -> None:
         admin_endpoints = {"create_authority", "revoke_authority", "delete_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
                            "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
                            "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now",
-                           "backup.settings", "backup.export", "monitoring.settings", "monitoring.check_now"}
-        operator_endpoints = {"create_certificate", "revoke_certificate", "renewal.renew"}
+                           "backup.settings", "backup.export", "monitoring.settings", "monitoring.check_now",
+                           "certificate_profiles.manage", "automation.settings", "automation.run_now", "acme_admin.settings"}
+        operator_endpoints = {"create_certificate", "revoke_certificate", "renewal.renew", "inventory.update_metadata"}
         if endpoint in admin_endpoints and not can_manage("admin"):
             abort(403)
         if endpoint in operator_endpoints and not can_manage("admin", "operator"):

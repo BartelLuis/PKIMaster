@@ -21,7 +21,9 @@ import stat
 import tempfile
 import zipfile
 
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from flask import Blueprint, Response, abort, current_app, flash, render_template, request, session
@@ -31,6 +33,8 @@ from enterprise import _local_setup_request, _read_secrets, _verify_existing_key
 
 backup = Blueprint("backup", __name__)
 MAGIC = b"PKIMASTER-BACKUP\x00\x01"
+RECIPIENT_MAGIC = b"PKIMASTER-BACKUP\x00\x02"
+RECIPIENT_LABEL = b"PKIMaster backup recipient v2"
 MAX_BYTES = 128 * 1024 * 1024
 MAX_FILES = 10000
 MARKER = ".restore-pending.json"
@@ -65,7 +69,66 @@ def encrypt_archive(plaintext: bytes, passphrase: str) -> bytes:
     return header + AESGCM(_derive_key(passphrase, salt)).encrypt(nonce, plaintext, header)
 
 
-def decrypt_archive(encrypted: bytes, passphrase: str) -> bytes:
+def recipient_public_key(pem: str):
+    """Accept a dedicated RSA encryption recipient; return canonical PEM and ID."""
+    try:
+        if not isinstance(pem, str) or len(pem) > 16384:
+            raise ValueError
+        key = serialization.load_pem_public_key(pem.encode("ascii"))
+        if not isinstance(key, rsa.RSAPublicKey) or key.key_size not in {3072, 4096} or key.public_numbers().e != 65537:
+            raise ValueError
+        der = key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        canonical = key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+        return canonical, hashlib.sha256(der).hexdigest()
+    except (ValueError, TypeError, UnicodeError, UnsupportedAlgorithm) as exc:
+        raise BackupError("Use an RSA-3072 or RSA-4096 recovery public key with exponent 65537.") from exc
+
+
+def encrypt_recipient_archive(plaintext: bytes, public_pem: str) -> bytes:
+    """Envelope encryption lets scheduled jobs work without the recovery secret."""
+    if len(plaintext) > MAX_BYTES:
+        raise BackupError("The backup exceeds the 128 MiB archive limit.")
+    canonical, fingerprint = recipient_public_key(public_pem)
+    public_key = serialization.load_pem_public_key(canonical.encode("ascii"))
+    key, nonce = os.urandom(32), os.urandom(12)
+    wrapped = public_key.encrypt(key, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),
+                                                algorithm=hashes.SHA256(), label=RECIPIENT_LABEL))
+    header = RECIPIENT_MAGIC + len(wrapped).to_bytes(2, "big") + bytes.fromhex(fingerprint) + nonce + wrapped
+    return header + AESGCM(key).encrypt(nonce, plaintext, header)
+
+
+def _decrypt_recipient_archive(encrypted: bytes, recovery_key: bytes | None, passphrase: str) -> bytes:
+    minimum = len(RECIPIENT_MAGIC) + 46
+    if not minimum + 384 + 16 <= len(encrypted) <= MAX_BYTES + minimum + 512 + 16:
+        raise BackupError("This recipient-encrypted backup is invalid or exceeds 128 MiB.")
+    if not recovery_key:
+        raise BackupError("Select the private recovery key downloaded when automatic backups were configured.")
+    if len(recovery_key) > 32768:
+        raise BackupError("The private recovery key file is too large.")
+    try:
+        length = int.from_bytes(encrypted[len(RECIPIENT_MAGIC):len(RECIPIENT_MAGIC) + 2], "big")
+        if length not in {384, 512} or len(encrypted) > MAX_BYTES + minimum + length + 16:
+            raise ValueError
+        key = serialization.load_pem_private_key(recovery_key, password=passphrase.encode() if passphrase else None)
+        if not isinstance(key, rsa.RSAPrivateKey) or key.key_size // 8 != length:
+            raise ValueError
+        fingerprint = hashlib.sha256(key.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).digest()
+        offset = len(RECIPIENT_MAGIC) + 2
+        if fingerprint != encrypted[offset:offset + 32]:
+            raise ValueError
+        nonce = encrypted[offset + 32:offset + 44]
+        header = encrypted[:minimum + length]
+        secret = key.decrypt(encrypted[minimum:minimum + length],
+                             padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=RECIPIENT_LABEL))
+        return AESGCM(secret).decrypt(nonce, encrypted[len(header):], header)
+    except (ValueError, TypeError, InvalidTag, UnsupportedAlgorithm) as exc:
+        raise BackupError("The recovery key or its passphrase is incorrect, or the archive has been damaged.") from exc
+
+
+def decrypt_archive(encrypted: bytes, passphrase: str, *, recovery_key: bytes | None = None) -> bytes:
+    if encrypted.startswith(RECIPIENT_MAGIC):
+        return _decrypt_recipient_archive(encrypted, recovery_key, passphrase)
     header_size = len(MAGIC) + 28
     if not header_size + 16 <= len(encrypted) <= MAX_BYTES + header_size + 16 or not encrypted.startswith(MAGIC):
         raise BackupError("This is not a supported PKIMaster backup, or it exceeds 128 MiB.")
@@ -546,8 +609,16 @@ def restore():
             uploaded = request.files.get("archive")
             if not uploaded or not uploaded.filename:
                 raise BackupError("Select a PKIMaster .pkibackup archive.")
-            encrypted = uploaded.read(MAX_BYTES + len(MAGIC) + 45)
-            plaintext = decrypt_archive(encrypted, request.form.get("passphrase", ""))
+            encrypted = uploaded.read(MAX_BYTES + 1025)
+            expected = request.form.get("expected_sha256", "").strip().lower()
+            if expected:
+                if not re.fullmatch(r"[0-9a-f]{64}", expected):
+                    raise BackupError("Enter the complete 64-character archive SHA-256 from your independently retained record.")
+                if hashlib.sha256(encrypted).hexdigest() != expected:
+                    raise BackupError("The archive does not match the independently recorded SHA-256. Recovery was refused before decryption.")
+            key_file = request.files.get("recovery_key")
+            recovery_key = key_file.read(32769) if key_file and key_file.filename else None
+            plaintext = decrypt_archive(encrypted, request.form.get("passphrase", ""), recovery_key=recovery_key)
             files = unpack_snapshot(plaintext)
             details = stage_restore(db, files)
             session.clear()

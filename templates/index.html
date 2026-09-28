@@ -19,34 +19,41 @@
     <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
     <div class="grid">
       <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="service.corp.example"></label>
-      <label>Profile<select name="profile"><option value="server">TLS server</option><option value="client">TLS client</option><option value="dual">TLS server and client</option></select></label>
+      <label>Certificate template<select name="template_id" data-certificate-template required>{% for item in issuance_templates %}<option value="{{ item.id }}" data-default-days="{{ item.default_validity_days }}" data-max-days="{{ item.max_validity_days }}" data-profile="{{ item.profile }}" {% if item.builtin == 'server' %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
     </div>
     <label>DNS names and IP addresses<textarea name="subject_alt_names" rows="2" placeholder="service.corp.example, 10.0.0.10"></textarea></label>
     <label>PEM certificate request (CSR)<textarea name="csr_pem" rows="5" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea></label>
     <p class="muted">Use a CSR to keep the certificate's private key on its destination system. Without a CSR, a software key is generated here. CA private keys can never be downloaded.</p>
-    <label>Validity in days<input name="validity_days" type="number" min="1" max="{{ max_leaf_days }}" value="{{ [397, max_leaf_days]|min }}" required></label>
-    <button type="submit" {% if not issuing_authorities %}disabled{% endif %}>Issue certificate</button>
+    <label>Validity in days<input name="validity_days" type="number" min="1" max="{{ max_leaf_days }}" data-installation-max="{{ max_leaf_days }}" value="{{ [90, max_leaf_days]|min }}" required></label>
+    <button type="submit" {% if not issuing_authorities or not issuance_templates %}disabled{% endif %}>Issue certificate</button>
+    {% if not issuance_templates %}<p class="muted">No enabled template permits your role. Ask an administrator to configure certificate templates.</p>{% endif %}
   </form>
 </section>
 {% endif %}
 <section class="card">
   <div class="section-heading"><div><h2>Issued certificates</h2><p>Search issued certificates, download artifacts, and manage revocation.</p></div><span class="pill">{{ total }} total</span></div>
-  <div class="table-toolbar"><form method="get" class="compact" role="search">
-    <input name="q" aria-label="Search certificates by common name" value="{{ query }}" placeholder="Search common name" maxlength="255">
-    <button class="button-secondary" type="submit">Search</button>
+  <div class="table-toolbar"><form method="get" class="inventory-filters" role="search">
+    <label class="search-field">Search<input name="q" aria-label="Search certificates" value="{{ query }}" placeholder="Name, SAN, serial, service or notes" maxlength="255"></label>
+    <label>Status<select name="status"><option value="">All statuses</option>{% for value,label in [('active','Valid'),('expiring','Expiring in 30 days'),('expired','Expired'),('revoked','Revoked')] %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label>Owner<input name="owner" value="{{ filters.owner }}" placeholder="Exact owner" maxlength="150"></label>
+    <label>Environment<input name="environment" value="{{ filters.environment }}" placeholder="Production" maxlength="50"></label>
+    <label>Tag<input name="tag" value="{{ filters.tag }}" placeholder="web" maxlength="60"></label>
+    <div class="actions"><button class="button-secondary" type="submit">Apply filters</button><a href="{{ url_for('index') }}">Clear</a><a href="{{ url_for('inventory.export_csv', **filters) }}">Export CSV</a></div>
   </form></div>
   {% if certificates %}
   <div class="table-scroll"><table>
-    <thead><tr><th>Common name / SANs</th><th>Issuer / profile</th><th>Status / expires</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Common name / SANs</th><th>Owner / service</th><th>Issuer / template</th><th>Status / expires</th><th>Actions</th></tr></thead>
     <tbody>{% for certificate in certificates %}<tr>
       <td><a class="mono cell-title" href="{{ url_for('renewal.detail', certificate_id=certificate['id']) }}">{{ certificate['common_name'] }}</a><br><small class="mono">{{ certificate['subject_alt_names'] }}</small>{% if certificate['renewed_from_id'] %}<br><small>Renewed from <a href="{{ url_for('renewal.detail', certificate_id=certificate['renewed_from_id']) }}">#{{ certificate['renewed_from_id'] }}</a></small>{% endif %}</td>
-      <td>{{ certificate['authority_name'] }}<br><small>{{ certificate['profile'] }}</small></td>
+      <td>{{ certificate['owner'] or 'Unassigned' }}<br><small>{{ certificate['service_name'] or certificate['deployment_host'] }}</small>{% if certificate['environment'] %}<br><span class="pill">{{ certificate['environment'] }}</span>{% endif %}{% if certificate['tags'] %}<br><small>{{ certificate['tags']|replace(',', ' · ') }}</small>{% endif %}</td>
+      <td>{{ certificate['authority_name'] }}<br><small>{{ certificate['template_name'] or certificate['profile'] }}</small></td>
       <td>
         {% if certificate['revoked_at'] %}<span class="pill status-revoked">Revoked</span>
         {% elif certificate['not_after'] <= now %}<span class="pill status-expired">Expired</span>
         {% elif certificate['authority_id'] not in active_authority_ids %}<span class="pill status-revoked">Issuer inactive</span>
         {% else %}<span class="pill status-active">Active</span>{% endif %}
         <br><small>{{ certificate['not_after'][:10] }}</small>
+        {% if certificate['tls_enabled'] %}<br><span class="pill {{ 'status-active' if certificate['endpoint_status'] == 'current' else 'status-warning' }}">TLS: {{ certificate['endpoint_status'] or 'Pending check' }}</span>{% endif %}
       </td>
       <td class="actions">
         <a href="{{ url_for('download_certificate', certificate_id=certificate['id'], artifact='cert') }}">Certificate</a>
@@ -65,10 +72,10 @@
       </td>
     </tr>{% endfor %}</tbody>
   </table></div>
-  {% else %}<div class="empty-state">{{ icon('audit') }}<h3>No matching certificates.</h3><p>{{ 'Try another common name to refine your search.' if query else 'Certificates issued by this server will appear here.' }}</p></div>{% endif %}
+  {% else %}<div class="empty-state">{{ icon('audit') }}<h3>No matching certificates.</h3><p>{{ 'Adjust the search or filters to find your certificates.' if query else 'Certificates issued by this server will appear here.' }}</p></div>{% endif %}
   <div class="pagination"><p>{{ total }} certificate(s). Page {{ page }}.</p><div class="actions">
-    {% if page > 1 %}<a href="{{ url_for('index', q=query, page=page-1) }}">Previous</a>{% endif %}
-    {% if page * 50 < total %}<a href="{{ url_for('index', q=query, page=page+1) }}">Next</a>{% endif %}
+    {% if page > 1 %}<a href="{{ url_for('index', page=page-1, **filters) }}">Previous</a>{% endif %}
+    {% if page * 50 < total %}<a href="{{ url_for('index', page=page+1, **filters) }}">Next</a>{% endif %}
   </div></div>
 </section>
 {% endblock %}

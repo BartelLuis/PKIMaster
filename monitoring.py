@@ -63,6 +63,9 @@ def delete_authority_monitoring(db, authority_id):
     for table, kind in (("certificates", "certificate"), ("issued_authorities", "subordinate")):
         ids = [row[0] for row in db.execute(f"SELECT id FROM {table} WHERE authority_id=?", (authority_id,))]
         db.executemany("DELETE FROM monitoring_findings WHERE finding_key=?", ((f"{kind}:{identity}:expiry",) for identity in ids))
+        if table == "certificates":
+            db.executemany("DELETE FROM monitoring_findings WHERE finding_key=? OR finding_key GLOB ?",
+                           ((f"deployment:{identity}", f"deployment:{identity}:*") for identity in ids))
 
 
 @contextmanager
@@ -279,7 +282,8 @@ def _record_findings(db, findings, now, public_checked, preserved=()):
     for finding in findings:
         key = finding["key"]
         kind, _, identifier = key.partition(":")
-        table = {"authority": "authorities", "certificate": "certificates", "subordinate": "issued_authorities"}.get(kind)
+        table = {"authority": "authorities", "certificate": "certificates", "deployment": "certificates",
+                 "subordinate": "issued_authorities"}.get(kind)
         if table and not db.execute(f"SELECT 1 FROM {table} WHERE id=?", (int(identifier.split(":", 1)[0]),)).fetchone():
             # A CA can be deleted while a public retrieval is in flight. Never
             # recreate its removed findings from the older read snapshot.
@@ -324,6 +328,12 @@ def run_monitoring_cycle():
         now = datetime.now(UTC)
         cursor = db.execute("SELECT public_cursor FROM monitoring_state WHERE id=1").fetchone()[0]
         findings, public_checked, preserved = collect_findings(_snapshot(db), config, now, start_index=cursor)
+        from tls_monitoring import collect_endpoint_findings
+        endpoint_findings, endpoint_preserved = collect_endpoint_findings(db, now, config["warning_days"])
+        findings.extend(endpoint_findings)
+        preserved.update(endpoint_preserved)
+        from automation import automation_findings
+        findings.extend(automation_findings(now))
         db.execute("BEGIN IMMEDIATE")
         _record_findings(db, findings, now, public_checked, preserved)
         active_count = db.execute("SELECT COUNT(*) FROM monitoring_findings WHERE active=1").fetchone()[0]

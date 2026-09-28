@@ -206,10 +206,18 @@ def create_app(test_config: dict | None = None) -> Flask:
     init_monitoring(app)
     from renewal import init_renewal
     init_renewal(app)
+    from certificate_profiles import init_profiles
+    init_profiles(app)
+    from inventory import init_inventory
+    init_inventory(app)
+    from automation import init_automation
+    init_automation(app)
+    from acme_service import init_acme
+    init_acme(app)
 
     @app.before_request
     def protect_audit_integrity():
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and request.blueprint != "acme_protocol":
             try:
                 verify_chain(get_db(), app.config["KEY_ENCRYPTION_SECRET"])
             except AuditIntegrityError:
@@ -221,18 +229,13 @@ def create_app(test_config: dict | None = None) -> Flask:
         authority = current_authority()
         active_authority_ids = {item["id"] for item in authorities if authority_is_active(item)}
         issuing = [item for item in authorities if item["role"] == "issuing" and item["id"] in active_authority_ids]
-        query = request.args.get("q", "").strip()[:255]
+        from inventory import search_filters, inventory_rows
+        from certificate_profiles import available_templates
+        filters = search_filters(request.args)
+        query = filters["q"]
         page = parse_positive_int(request.args.get("page"), 1, 1, 1000000)
-        # Escape LIKE metacharacters so the browser search is a literal substring.
-        pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         db = get_db()
-        total = db.execute("SELECT COUNT(*) FROM certificates WHERE common_name LIKE ? ESCAPE '\\'", (pattern,)).fetchone()[0]
-        certificates = db.execute(
-            """SELECT certificates.*, authorities.name AS authority_name
-               FROM certificates JOIN authorities ON authorities.id = certificates.authority_id
-               WHERE certificates.common_name LIKE ? ESCAPE '\\'
-               ORDER BY certificates.id DESC LIMIT 50 OFFSET ?""", (pattern, (page - 1) * 50)
-        ).fetchall()
+        certificates, total = inventory_rows(db, filters, page=page)
         counts = db.execute("""SELECT COUNT(*) AS total,
             COALESCE(SUM(revoked_at IS NOT NULL), 0) AS revoked,
             COALESCE(SUM(revoked_at IS NULL AND not_after <= ?), 0) AS expired,
@@ -246,7 +249,9 @@ def create_app(test_config: dict | None = None) -> Flask:
                                certificates=certificates, issuing_authorities=issuing,
                                active_authority_ids=active_authority_ids, key_download_enabled=key_download_enabled(),
                                revocation_reasons=REVOCATION_REASONS, now=utc_now().isoformat(),
-                               counts=counts, query=query, page=page, total=total, max_leaf_days=int(get_setting("max_leaf_days", 397)))
+                               counts=counts, query=query, filters=filters, page=page, total=total,
+                               issuance_templates=available_templates(db, g.user["role"]),
+                               max_leaf_days=int(get_setting("max_leaf_days", 397)))
 
     @app.get("/authorities/<int:authority_id>")
     def authority_detail(authority_id: int) -> str | Response:
@@ -482,10 +487,16 @@ def create_app(test_config: dict | None = None) -> Flask:
                 raise ValueError("End-entity certificates must be issued by an Issuing CA.")
             if not authority_is_active(authority):
                 raise ValueError(authority_block_reason(authority))
+            from certificate_profiles import validate_issuance
+            policy = validate_issuance(db, request.form.get("template_id", ""), common_name=common_name,
+                                      subject_alt_names=request.form.get("subject_alt_names", ""),
+                                      validity_days=days, role=g.user["role"], profile=profile,
+                                      csr_pem=request.form.get("csr_pem", "").strip() or None)
+            profile = policy["profile"]
             pem, key, serial, start, end = issue_end_entity_certificate(
                 common_name=common_name, issuer_certificate_pem=authority["certificate_pem"],
                 issuer_private_key_pem=authority_signing_key(authority), validity_days=days,
-                subject_alt_names=request.form.get("subject_alt_names", ""), profile=profile,
+                subject_alt_names=policy["subject_alt_names"], profile=profile,
                 csr_pem=request.form.get("csr_pem", "").strip() or None, crl_url=crl_distribution_url(authority["id"]),
                 aia_url=issuer_certificate_url(authority["id"]), minimum_rsa_bits=3072)
             certificate = x509.load_pem_x509_certificate(pem.encode())
@@ -494,9 +505,10 @@ def create_app(test_config: dict | None = None) -> Flask:
             except x509.ExtensionNotFound:
                 sans = ""
             result = db.execute("""INSERT INTO certificates
-                (common_name, authority_id, subject_alt_names, certificate_pem, private_key_pem, serial_number, not_before, not_after, profile)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (common_name, authority["id"], sans, pem, encrypt_private_key(key) if key else "", serial, start, end, profile))
+                (common_name, authority_id, subject_alt_names, certificate_pem, private_key_pem, serial_number, not_before, not_after, profile,template_id,template_snapshot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?,?)""",
+                (common_name, authority["id"], sans, pem, encrypt_private_key(key) if key else "", serial, start, end, profile,
+                 policy["template_id"], policy["template_snapshot"]))
             audit_event("certificate.issued", "certificate", str(result.lastrowid), f"{common_name}; profile={profile}; source={'CSR' if not key else 'generated'}")
             db.commit()
             flash(f"Issued certificate '{common_name}'.", "success")

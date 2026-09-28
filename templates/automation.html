@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading"><div><p class="eyebrow">Operations</p><h1>Automation</h1><p>Keep parent revocation status current and deliver recovery backups and audit evidence to your external archive.</p></div></section>
+<section class="card"><h2>Job status</h2><div class="table-wrap"><table><thead><tr><th>Job</th><th>Schedule</th><th>Last success</th><th>Latest result</th></tr></thead><tbody>
+{% for key, label in [('parent','Parent CRLs'),('backup','Encrypted backup'),('audit','Audit archive')] %}
+<tr><td>{{ label }}</td><td>{% if provider[key ~ '_enabled'] %}Every {{ provider.backup_interval_hours if key == 'backup' else provider[key ~ '_interval_minutes'] }} {{ 'hours' if key == 'backup' else 'minutes' }}{% else %}Disabled{% endif %}</td><td>{{ jobs[key].last_success or 'Never' }}</td><td>{% if jobs[key].last_error %}<span class="badge danger">Failed</span> {{ jobs[key].last_error }}{% elif jobs[key].last_success %}<span class="badge success">Successful</span>{% else %}Not run{% endif %}{% if key == 'audit' and jobs[key].last_cursor %}<br>Archived through event {{ jobs[key].last_cursor }}{% endif %}</td></tr>
+{% endfor %}</tbody></table></div>
+<p class="muted">Failed deliveries retry with backoff. Monitoring reports failures and overdue runs through your configured notification channel.</p>
+{% if backup_checksum %}<p>Last delivered backup SHA-256: <code>{{ backup_checksum }}</code></p><p class="muted">Retain this checksum independently of the SFTP archive. It can be checked before recovery.</p>{% endif %}
+<form method="post" action="{{ url_for('automation.run_now') }}" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Fresh authenticator code<input name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label><button type="submit">Run enabled jobs now</button></form></section>
+
+<section class="card"><h2>Schedule and destination</h2><form method="post" class="stack" id="automation-settings"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<fieldset><legend>Parent CRL synchronization</legend>
+<label class="check"><input type="checkbox" name="parent_enabled" {% if provider.parent_enabled %}checked{% endif %}> Retrieve and verify parent CRLs automatically</label>
+<p class="muted">For an activated subordinate CA, enter one HTTP(S) URL per ancestor, starting with its immediate issuer and ending with the root. Expired, unsigned and older CRLs are rejected. A verified revocation permanently disables the local CA.</p>
+{% if authority %}<p>Current CA: <strong>{{ authority.name }}</strong> ({{ authority.role }})</p>{% endif %}
+<label>Parent CRL URLs, one per line<textarea name="parent_urls" rows="4" placeholder="https://parent.example/ca.crl">{{ provider.parent_urls|join('\n') }}</textarea></label>
+<label>Check interval, minutes<input type="number" name="parent_interval_minutes" min="5" max="10080" value="{{ provider.parent_interval_minutes }}" required></label></fieldset>
+
+<fieldset><legend>Encrypted recovery backups</legend>
+<label class="check"><input type="checkbox" name="backup_enabled" {% if provider.backup_enabled %}checked{% endif %}> Deliver scheduled complete-state backups</label>
+<div class="form-grid"><label>Interval, hours<input type="number" name="backup_interval_hours" min="1" max="720" value="{{ provider.backup_interval_hours }}" required></label><label>Backups to retain<input type="number" name="backup_retention" min="1" max="365" value="{{ provider.backup_retention }}" required></label></div>
+<p>The CA stores only your recovery public key. The private recovery key is needed to restore a scheduled backup on a fresh host. Encryption protects confidentiality and integrity, but does not prove who created a backup: anyone holding the public key can create an encrypted archive. Restore only from a trusted source, preferably using an independently retained archive checksum.</p>
+<button type="button" data-generate-recovery-key>Generate and download recovery key in this browser</button>
+<p class="muted" data-recovery-key-status role="status">Generation requires a browser with Web Crypto over HTTPS. You may also paste a dedicated RSA-3072 or RSA-4096 public key below.</p>
+<label>Recovery public key<textarea name="backup_public_key" id="backup-public-key" rows="7" spellcheck="false">{{ provider.backup_public_key }}</textarea></label>
+<p class="muted">SHA-256 public-key fingerprint: <code data-recovery-fingerprint>{{ fingerprint or 'Not configured' }}</code></p>
+<label class="check"><input type="checkbox" name="recovery_key_saved"> I saved the matching private recovery key outside this CA host. Required when enabling backups or changing the key.</label>
+<p class="muted">Existing backups remain encrypted for their original key. Keep older recovery keys for as long as those backups are retained. External hardware/HSM keys remain subject to their provider's recovery process.</p></fieldset>
+
+<fieldset><legend>External audit evidence</legend>
+<label class="check"><input type="checkbox" name="audit_enabled" {% if provider.audit_enabled %}checked{% endif %}> Archive the verified audit chain and checkpoint</label>
+<label>Interval, minutes<input type="number" name="audit_interval_minutes" min="5" max="10080" value="{{ provider.audit_interval_minutes }}" required></label>
+<p class="muted">Audit archives use immutable filenames and are never removed by backup retention. A conflicting external checkpoint stops delivery and raises a finding. Audit archives contain event details and should be kept private.</p></fieldset>
+
+<fieldset><legend>External SFTP archive</legend><p class="muted">Use a dedicated directory and account. Obtain the server fingerprint through a trusted channel. A changed host, account, fingerprint or authentication method requires re-entering its credential.</p>
+<div class="form-grid"><label>Host<input name="host" value="{{ provider.host }}" maxlength="253" autocomplete="off"></label><label>Port<input type="number" name="port" min="1" max="65535" value="{{ provider.port }}"></label><label>Username<input name="username" value="{{ provider.username }}" maxlength="256" autocomplete="off"></label><label>Absolute directory<input name="directory" value="{{ provider.directory }}" maxlength="2048" placeholder="/archives/pkimaster"></label></div>
+<label>SSH host-key fingerprint<input name="host_key_sha256" value="{{ provider.host_key_sha256 }}" placeholder="SHA256:…" maxlength="64" autocomplete="off"></label>
+<label>Authentication<select name="auth_method"><option value="key" {% if provider.auth_method == 'key' %}selected{% endif %}>SSH private key</option><option value="password" {% if provider.auth_method == 'password' %}selected{% endif %}>Password</option></select></label>
+<label>SSH private key<textarea name="private_key_pem" rows="4" autocomplete="off" spellcheck="false" placeholder="{% if credential_stored %}Credential stored; leave blank to keep it for the same destination{% else %}PEM or OpenSSH private key{% endif %}"></textarea></label>
+<label>SSH key passphrase<input type="password" name="private_key_passphrase" autocomplete="new-password"></label>
+<label>SFTP password<input type="password" name="password" autocomplete="new-password" placeholder="{% if credential_stored %}Leave blank to keep the stored credential{% endif %}"></label></fieldset>
+<label>Fresh authenticator code<input name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label><button type="submit">Save automation settings</button>
+</form></section>
+<script src="{{ url_for('static', filename='js/automation.js') }}" defer></script>
+{% endblock %}

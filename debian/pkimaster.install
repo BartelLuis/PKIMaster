@@ -14,6 +14,12 @@ renewal.py usr/lib/pkimaster
 monitoring.py usr/lib/pkimaster
 monitoring_transports.py usr/lib/pkimaster
 monitoring_worker.py usr/lib/pkimaster
+certificate_profiles.py usr/lib/pkimaster
+inventory.py usr/lib/pkimaster
+tls_monitoring.py usr/lib/pkimaster
+automation.py usr/lib/pkimaster
+automation_worker.py usr/lib/pkimaster
+acme_service.py usr/lib/pkimaster
 pki.py usr/lib/pkimaster
 pkimaster_server.py usr/lib/pkimaster
 templates usr/lib/pkimaster
