@@ -1,6 +1,7 @@
 """Optional WebAuthn passkeys as a phishing-resistant second factor."""
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import hashlib
 import hmac
 import json
@@ -13,6 +14,7 @@ from urllib.parse import urlsplit
 
 from flask import Blueprint, Response, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
 from fido2.server import Fido2Server
+from fido2.utils import websafe_encode
 from fido2.webauthn import (
     AttestedCredentialData,
     AuthenticationResponse,
@@ -92,7 +94,16 @@ def _valid_state(name: str, user_id: int) -> dict:
 
 
 def _options_response(options) -> Response:
-    return jsonify(dict(options)["publicKey"])
+    def json_safe(value):
+        if isinstance(value, (bytes, bytearray)):
+            return websafe_encode(bytes(value))
+        if isinstance(value, Mapping):
+            return {key: json_safe(item) for key, item in value.items()}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [json_safe(item) for item in value]
+        return value
+
+    return jsonify(json_safe(dict(options)["publicKey"]))
 
 
 @passkeys.get("/account/security/passkeys")

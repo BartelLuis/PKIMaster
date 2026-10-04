@@ -14,7 +14,7 @@ from fido2.webauthn import AttestedCredentialData
 from app import create_app, get_db
 from mfa import code_at_counter, decrypt_secret, time_counter
 from mfa_helpers import complete_mfa
-from passkeys import _server
+from passkeys import _options_response, _server
 
 
 class PasskeyTests(unittest.TestCase):
@@ -65,6 +65,20 @@ class PasskeyTests(unittest.TestCase):
             server = _server()
             self.assertTrue(server._verify(self.base_url))
             self.assertFalse(server._verify("https://attacker.example"))
+
+    def test_binary_option_fields_are_encoded_for_json(self):
+        options = {"publicKey": {
+            "challenge": b"\x00\xff",
+            "user": {"id": b"user-id"},
+            "allowCredentials": [{"id": b"credential-id"}],
+        }}
+        with self.app.app_context():
+            response = _options_response(options)
+        self.assertEqual(response.json, {
+            "challenge": "AP8",
+            "user": {"id": "dXNlci1pZA"},
+            "allowCredentials": [{"id": "Y3JlZGVudGlhbC1pZA"}],
+        })
 
     def test_registration_stores_credential_only_after_fresh_totp(self):
         begin = self._post(self.client, "/account/security/passkeys/register/begin", {})

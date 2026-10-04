@@ -1,6 +1,7 @@
 """Exercise automatic recovery through the real packaged HTTPS supervisor."""
 from contextlib import closing
 from http.cookiejar import CookieJar
+import hashlib
 import importlib.util
 import json
 import os
@@ -72,6 +73,7 @@ class AutomaticHttpsRecoveryTests(unittest.TestCase):
             authority_id = authority["id"]
             fingerprint = x509.load_pem_x509_certificate(authority["certificate_pem"].encode()).fingerprint(hashes.SHA256())
             encrypted = encrypt_archive(create_snapshot(get_db()), passphrase)
+        expected_sha256 = hashlib.sha256(encrypted).hexdigest()
         source_secrets = json.loads((source / "runtime-secrets.json").read_text())
 
         create_app({"TESTING": True, "INSTANCE_PATH": str(destination)})
@@ -161,7 +163,8 @@ class AutomaticHttpsRecoveryTests(unittest.TestCase):
         _, restore_page, _ = wait_for("/restore", "/restore")
         first_child = pid_file.read_text().splitlines()[0]
         boundary = "PKIMaster" + secrets.token_hex(16)
-        fields = {"csrf_token": csrf(restore_page), "passphrase": passphrase, "source_stopped": "on"}
+        fields = {"csrf_token": csrf(restore_page), "passphrase": passphrase, "source_stopped": "on",
+                  "expected_sha256": expected_sha256}
         parts = []
         for name, value in fields.items():
             parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
