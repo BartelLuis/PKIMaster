@@ -4,7 +4,8 @@
 <section class="card">
   <h2>Create an encrypted backup</h2>
   <p>The archive contains the database, CA and certificate keys, users and MFA credentials, settings, complete audit history, HTTPS identity and locally managed SoftHSM tokens.</p>
-  <p class="notice">Keep the archive and its passphrase separately. Anyone who has both can recover your CA keys and credentials. Lost backup passphrases cannot be reset.</p>
+  <p class="notice">Each archive is signed with this installation's independent Ed25519 provenance key. Keep its signer SHA-256 fingerprint, shown below, separately from the archive and passphrase. Anyone with the archive and passphrase can recover your CA keys and credentials. Lost passphrases cannot be reset.</p>
+  <p>Signer fingerprint (SHA-256): <code>{{ provenance_fingerprint }}</code></p>
   <form method="post" action="{{ url_for('backup.export') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Backup passphrase <input type="password" name="passphrase" minlength="20" maxlength="256" autocomplete="new-password" required></label>
@@ -19,6 +20,6 @@
   <h2>Restore on a fresh host</h2>
   <ol><li>Install PKIMaster on the replacement host. Connect through localhost or an SSH tunnel.</li><li>Choose <strong>Restore an existing installation</strong> on the initial setup page before creating an administrator.</li><li>Stop the original installation, then upload the archive and enter its passphrase.</li><li>The packaged HTTPS service restarts automatically. Sign in with a restored account and authenticator, then check publication URLs, monitoring and key providers.</li></ol>
   <p>The destination keeps its current HTTPS address and port. The backup's CA identity and other settings are restored; all old browser sessions are invalidated.</p>
-  <p class="form-hint">External PKCS#11 and Azure keys remain in their providers. The backup preserves their references and credentials, but the replacement host still needs access to those providers and their modules. Local managed SoftHSM token files are included. Remote publication files and system journal logs are outside the archive.</p>
+  <p class="form-hint">External PKCS#11 and Azure keys remain in their providers. The backup preserves their references and credentials, but the replacement host still needs access to those providers and their modules. Local managed SoftHSM token files are included. Remote publication files, system journal logs and the local provenance-signing key are outside the archive. A restored host creates a new provenance identity.</p>
 </section>
 {% endblock %}

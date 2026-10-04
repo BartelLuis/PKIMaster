@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">Administration</span><h1>Four-eyes approvals</h1><p>Review submitted actions. Approval does not bypass normal policy, validation, or audit checks.</p></div><span class="pill">Administrator access</span></div>
+{% for item in requests %}
+<section class="card">
+  <div class="section-heading">
+    <div>
+      <h2>{{ item.action_label }}</h2>
+      <p>Request {{ item.id }} · by {{ item.requester }} · {{ item.requested_at }} · <strong>{{ item.status }}</strong></p>
+      {% if item.status != 'pending' %}<p>Reviewed by {{ item.reviewer }} at {{ item.reviewed_at }}.</p>{% endif %}
+    </div>
+  </div>
+  {% if item.status == 'pending' %}
+    {% if item.requested_by == current_user['id'] %}
+      <p class="notice notice-warning">You submitted this request and cannot approve or reject it.</p>
+    {% else %}
+      <details><summary>Inspect request details</summary><dl>
+        {% for key, values in item.form_data.items() %}
+          <dt>{{ key }}</dt><dd>{{ values|join(', ') }}</dd>
+        {% endfor %}
+        {% for key, digest in item.file_hashes.items() %}
+          <dt>{{ key }} SHA-256</dt><dd>{{ digest }}</dd>
+        {% endfor %}
+      </dl></details>
+      <form method="post" enctype="multipart/form-data" action="{{ url_for(item.endpoint, **item.view_args) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="approval_id" value="{{ item.id }}">
+        {% for key, values in item.form_data.items() %}
+          {% for value in values %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+        {% endfor %}
+        {% for key in item.file_hashes %}
+          <label>Re-upload {{ key }} exactly as submitted <input type="file" name="{{ key }}" required></label>
+        {% endfor %}
+        {% for key in item.secret_fields %}
+          {% if key == 'totp_code' %}
+            <label>Enter your current authenticator code <input type="text" name="{{ key }}" inputmode="numeric" autocomplete="one-time-code" required></label>
+          {% else %}
+            <label>Re-enter {{ key }} <input type="password" name="{{ key }}" autocomplete="new-password" required></label>
+          {% endif %}
+        {% endfor %}
+        <div class="form-actions"><button type="submit">Approve and apply action</button></div>
+      </form>
+      <form method="post" action="{{ url_for('approvals.reject', approval_id=item.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary" type="submit">Reject request</button>
+      </form>
+    {% endif %}
+  {% endif %}
+</section>
+{% else %}
+<section class="card"><p>No approval requests have been submitted.</p></section>
+{% endfor %}
+{% endblock %}

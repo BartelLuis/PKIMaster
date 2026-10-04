@@ -20,8 +20,9 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from app import authority_block_reason, create_app, get_db
 from audit_integrity import AuditIntegrityError
 import automation
-from backup import (BackupError, RECIPIENT_MAGIC, decrypt_archive, encrypt_archive,
-                    encrypt_recipient_archive, recipient_public_key, unpack_snapshot)
+from backup import (BackupError, RECIPIENT_MAGIC, SIGNED_MAGIC, decrypt_archive, encrypt_archive,
+                    encrypt_recipient_archive, provenance_fingerprint, recipient_public_key,
+                    unpack_snapshot, verify_signed_archive)
 from mfa import code_at_counter, decrypt_secret, time_counter
 from mfa_helpers import complete_mfa
 from monitoring_transports import MonitoringError
@@ -245,7 +246,12 @@ class AutomationTests(unittest.TestCase):
         self.assertIn(unrelated, self.remote.files)
         self.assertEqual(len(self.remote.removed), 1)
         encrypted = self.remote.files[managed[0]]
-        files = unpack_snapshot(decrypt_archive(encrypted, "", recovery_key=self.private))
+        self.assertTrue(encrypted.startswith(SIGNED_MAGIC))
+        with self.app.app_context():
+            trusted = provenance_fingerprint()
+            ciphertext = verify_signed_archive(encrypted, trusted)
+        self.assertTrue(ciphertext.startswith(RECIPIENT_MAGIC))
+        files = unpack_snapshot(decrypt_archive(ciphertext, "", recovery_key=self.private))
         self.assertIn("pkimaster.sqlite", files)
         self.assertNotIn(self.private, b"".join(files.values()))
         self.assertEqual(self.remote.modes[managed[0]] & 0o777, 0o600)
@@ -278,6 +284,8 @@ class AutomationTests(unittest.TestCase):
         self.configure(backup_enabled=True)
         self.assertEqual(self.cycle()["status"], "checked")
         encrypted = next(iter(self.remote.files.values()))
+        with self.app.app_context():
+            trusted_fingerprint = provenance_fingerprint()
         with tempfile.TemporaryDirectory() as destination:
             restored = create_app({"TESTING": True, "INSTANCE_PATH": destination})
             client = restored.test_client()
@@ -286,6 +294,7 @@ class AutomationTests(unittest.TestCase):
             with patch("backup.decrypt_archive") as decrypt:
                 rejected = client.post("/restore", base_url=self.base, data={
                     "csrf_token": token, "source_stopped": "on", "expected_sha256": "0" * 64,
+                    "expected_signer_sha256": trusted_fingerprint,
                     "archive": (io.BytesIO(encrypted), "scheduled.pkibackup"),
                     "recovery_key": (io.BytesIO(self.private), "private-recovery.pem")})
             self.assertEqual(rejected.status_code, 400)
@@ -294,6 +303,7 @@ class AutomationTests(unittest.TestCase):
             response = client.post("/restore", base_url=self.base, data={
                 "csrf_token": token, "source_stopped": "on", "passphrase": "",
                 "expected_sha256": hashlib.sha256(encrypted).hexdigest(),
+                "expected_signer_sha256": trusted_fingerprint,
                 "archive": (io.BytesIO(encrypted), "scheduled.pkibackup"),
                 "recovery_key": (io.BytesIO(self.private), "private-recovery.pem")})
             self.assertEqual(response.status_code, 202, response.data)

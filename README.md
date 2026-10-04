@@ -12,6 +12,25 @@ PKIMaster is a private PKI for Debian 13, installed as an APT package and config
 
 **BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
 
+## Pre-release: 0.5.0-rc1
+
+The 0.5.0 release candidate is a pre-release for testing, not the final 0.5.0
+release. It adds:
+
+| Area | What you can do |
+| --- | --- |
+| Four-eyes approvals | Optionally require a different MFA-enrolled administrator to approve sensitive changes, including user access and backup export. |
+| CA rollover | Rekey subordinate and root CAs on separate servers and overlap old and new trust paths during migration. |
+| Backup provenance | Sign manual and scheduled encrypted backups; verify the Ed25519 signer against a fingerprint retained independently before recovery. |
+| Passkeys | Optionally use WebAuthn passkeys as a phishing-resistant second factor, while retaining the required TOTP/recovery fallback. |
+| SCEP and EST | Optionally enable credential-scoped device enrollment under certificate-template and domain constraints. Both protocols are disabled by default. |
+
+Four-eyes approval and SCEP/EST are opt-in. Read the operational limits and
+rollout procedures in [approvals](docs/APPROVALS.md), [CA rollover](docs/CA-ROLLOVER.md),
+[backup and recovery](docs/BACKUP.md), [passkeys](docs/PASSKEYS.md) and
+[SCEP/EST](docs/SCEP-EST.md) before enabling them. This project targets a BSI
+operational baseline and does not claim certification.
+
 ## New in 0.4.0-1
 
 | Area | What you can do |
@@ -115,7 +134,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 
 ```sh
 sudo apt update
-sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-dnspython python3-pykcs11 softhsm2
+sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-dnspython python3-fido2 python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
 sudo apt install ./dist/pkimaster_0.4.0-1_all.deb
 ```

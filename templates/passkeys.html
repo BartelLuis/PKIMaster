@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading"><div><span class="eyebrow">Account security</span><h1>Passkeys</h1><p>Passkeys provide a phishing-resistant second factor for accounts that sign in with a password.</p></div></section>
+<section class="card">
+  <h2>Register a passkey</h2>
+  <p>Your current authenticator remains available. Registration requires both an authenticator ceremony and a fresh current TOTP code.</p>
+  <label>Passkey name <input type="text" name="label" maxlength="80" value="My passkey" required></label>
+  <label>Current authenticator code <input type="text" name="totp_code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required></label>
+  <button type="button" data-passkey-register
+          data-begin-url="{{ url_for('passkeys.register_begin') }}"
+          data-complete-url="{{ url_for('passkeys.register_complete') }}">Register passkey</button>
+  <p class="form-hint" data-passkey-message role="status"></p>
+  <input id="passkey-csrf" type="hidden" value="{{ csrf_token() }}">
+</section>
+<section class="card">
+  <h2>Registered passkeys</h2>
+  {% if credentials %}
+  {% for credential in credentials %}
+  <form method="post" action="{{ url_for('passkeys.remove') }}" class="form-card">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="credential_id" value="{{ credential.id|lower }}">
+    <strong>{{ credential.label }}</strong><span class="muted">Added {{ credential.created_at }}</span>
+    <label>Current authenticator code <input name="totp_code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required></label>
+    <button class="secondary" type="submit">Remove passkey</button>
+  </form>
+  {% endfor %}
+  {% else %}
+  <p>No passkeys are registered for this account.</p>
+  {% endif %}
+</section>
+<script src="{{ url_for('static', filename='js/passkeys.js') }}" defer></script>
+{% endblock %}

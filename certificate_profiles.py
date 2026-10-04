@@ -141,6 +141,10 @@ def manage():
     from app import get_db
     db = get_db()
     if request.method == "POST":
+        from approvals import approval_gate
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         try:
             values = _form_values()
             identifier = request.form.get("template_id", "")

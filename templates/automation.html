@@ -7,6 +7,7 @@
 {% endfor %}</tbody></table></div>
 <p class="muted">Failed deliveries retry with backoff. Monitoring reports failures and overdue runs through your configured notification channel.</p>
 {% if backup_checksum %}<p>Last delivered backup SHA-256: <code>{{ backup_checksum }}</code></p><p class="muted">Retain this checksum independently of the SFTP archive. It can be checked before recovery.</p>{% endif %}
+<p>Backup provenance signer SHA-256: <code>{{ provenance_fingerprint }}</code></p><p class="muted">Record this fingerprint independently. Scheduled and manual archives are signed by this installation's Ed25519 provenance key.</p>
 <form method="post" action="{{ url_for('automation.run_now') }}" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Fresh authenticator code<input name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label><button type="submit">Run enabled jobs now</button></form></section>
 
 <section class="card"><h2>Schedule and destination</h2><form method="post" class="stack" id="automation-settings"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -20,7 +21,7 @@
 <fieldset><legend>Encrypted recovery backups</legend>
 <label class="check"><input type="checkbox" name="backup_enabled" {% if provider.backup_enabled %}checked{% endif %}> Deliver scheduled complete-state backups</label>
 <div class="form-grid"><label>Interval, hours<input type="number" name="backup_interval_hours" min="1" max="720" value="{{ provider.backup_interval_hours }}" required></label><label>Backups to retain<input type="number" name="backup_retention" min="1" max="365" value="{{ provider.backup_retention }}" required></label></div>
-<p>The CA stores only your recovery public key. The private recovery key is needed to restore a scheduled backup on a fresh host. Encryption protects confidentiality and integrity, but does not prove who created a backup: anyone holding the public key can create an encrypted archive. Restore only from a trusted source, preferably using an independently retained archive checksum.</p>
+<p>The CA stores only your recovery public key. The private recovery key is needed to restore a scheduled backup on a fresh host. Archives are additionally signed with the provenance key above; during recovery, verify its independently retained fingerprint before decryption. Keep an independent archive checksum as an additional transfer-integrity check.</p>
 <button type="button" data-generate-recovery-key>Generate and download recovery key in this browser</button>
 <p class="muted" data-recovery-key-status role="status">Generation requires a browser with Web Crypto over HTTPS. You may also paste a dedicated RSA-3072 or RSA-4096 public key below.</p>
 <label>Recovery public key<textarea name="backup_public_key" id="backup-public-key" rows="7" spellcheck="false">{{ provider.backup_public_key }}</textarea></label>

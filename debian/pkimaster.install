@@ -20,6 +20,9 @@ tls_monitoring.py usr/lib/pkimaster
 automation.py usr/lib/pkimaster
 automation_worker.py usr/lib/pkimaster
 acme_service.py usr/lib/pkimaster
+scep_est.py usr/lib/pkimaster
+approvals.py usr/lib/pkimaster
+passkeys.py usr/lib/pkimaster
 pki.py usr/lib/pkimaster
 pkimaster_server.py usr/lib/pkimaster
 templates usr/lib/pkimaster

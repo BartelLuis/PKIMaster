@@ -27,12 +27,13 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-APPLICATION_MODULES = {"app", "enterprise", "identity", "mfa", "pki", "key_backends", "key_storage", "audit_integrity", "security", "publication", "publication_transports", "publication_worker", "pkimaster_server", "wsgi"}
+APPLICATION_MODULES = {"app", "approvals", "enterprise", "identity", "mfa", "passkeys", "pki", "key_backends", "key_storage", "audit_integrity", "security", "publication", "publication_transports", "publication_worker", "pkimaster_server", "wsgi"}
 APPLICATION_MODULES |= {"backup", "renewal", "monitoring", "monitoring_transports", "monitoring_worker"}
-APPLICATION_MODULES |= {"certificate_profiles", "inventory", "tls_monitoring", "automation", "automation_worker", "acme_service"}
+APPLICATION_MODULES |= {"certificate_profiles", "inventory", "tls_monitoring", "automation", "automation_worker", "acme_service", "scep_est"}
 PUBLICATION_SOURCE_FILES = {"docs/PUBLICATION.md", "debian/pkimaster-publication.service", "debian/pkimaster-publication.timer"}
 PUBLICATION_SOURCE_FILES |= {"docs/BACKUP.md", "docs/MONITORING.md", "debian/pkimaster-monitoring.service", "debian/pkimaster-monitoring.timer"}
 PUBLICATION_SOURCE_FILES |= {"docs/AUTOMATION.md", "docs/ACME.md", "debian/pkimaster-automation.service", "debian/pkimaster-automation.timer"}
+PUBLICATION_SOURCE_FILES |= {"docs/APPROVALS.md", "docs/CA-ROLLOVER.md", "docs/SCEP-EST.md", "docs/PASSKEYS.md", "debian/pkimaster.docs"}
 
 
 def require(condition: bool, message: str) -> None:

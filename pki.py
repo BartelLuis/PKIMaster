@@ -416,9 +416,9 @@ def _verify_exchange_link(child: x509.Certificate, parent: x509.Certificate) -> 
 
 
 def create_ca_request(common_name: str, role: str, *, signer: ExternalSigner | None = None) -> tuple[str, str]:
-    """Create a subordinate CA's key and request on that CA's own server."""
-    if role not in {"intermediate", "issuing"}:
-        raise ValueError("Only intermediate and issuing authorities request a parent signature.")
+    """Create a CA request; root requests can be used for a rollover cross-certificate."""
+    if role not in {"root", "intermediate", "issuing"}:
+        raise ValueError("Select a supported CA role.")
     subject = build_subject(common_name)
     private_key = signer if signer is not None else generate_private_key()
     _validate_exchange_key(private_key.public_key())

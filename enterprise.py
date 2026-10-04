@@ -37,6 +37,7 @@ DEFAULT_SETTINGS = {
     "session_minutes": "30",
     "listen_address": "127.0.0.1",
     "https_port": "8443",
+    "require_dual_approval": "false",
 }
 ROLES = {"admin", "operator", "auditor"}
 enterprise = Blueprint("enterprise", __name__)
@@ -159,7 +160,7 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
 def get_setting(key: str, default=None):
     row = _db().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     value = row["value"] if row else DEFAULT_SETTINGS.get(key, default)
-    if key == "allow_key_export":
+    if key in {"allow_key_export", "require_dual_approval"}:
         return str(value).lower() == "true"
     return value
 
@@ -250,6 +251,12 @@ def _settings_from_form() -> dict[str, str]:
             raise ValueError(f"{key.replace('_', ' ').capitalize()} must be between {minimum} and {maximum}.")
         values[key] = str(value)
     values["allow_key_export"] = "true" if request.form.get("allow_key_export") == "on" else "false"
+    values["require_dual_approval"] = "true" if request.form.get("require_dual_approval") == "on" else "false"
+    if values["require_dual_approval"] == "true":
+        administrators = _db().execute("""SELECT COUNT(*) FROM users
+            WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL AND mfa_secret != ''""").fetchone()[0]
+        if administrators < 2:
+            raise ValueError("Four-eyes approval requires at least two active administrators with MFA enrolled.")
     try:
         values["listen_address"] = str(ipaddress.ip_address(request.form.get("listen_address", DEFAULT_SETTINGS["listen_address"]).strip()))
     except ValueError as exc:
@@ -388,6 +395,8 @@ def init_enterprise(app) -> None:
     app.register_blueprint(enterprise)
     from mfa import init_mfa
     init_mfa(app)
+    from approvals import init_approvals
+    init_approvals(app)
     from identity import identity, public_config, user_allowed
     app.register_blueprint(identity)
 
@@ -398,9 +407,9 @@ def init_enterprise(app) -> None:
         endpoint = request.endpoint
         if endpoint is None:
             return None
-        # ACME has signed JWS requests, one-use nonces and account authorization.
-        # Its admin UI continues to require the normal browser session and MFA.
-        if request.blueprint == "acme_protocol":
+        # Enrollment protocols authenticate requests independently; their admin
+        # configuration continues to require the normal browser session and MFA.
+        if request.blueprint in {"acme_protocol", "scep_protocol", "est_protocol"}:
             return None
         if endpoint in {"healthz", "static", "download_crl", "publication.aia"} and request.method in {"GET", "HEAD", "OPTIONS"}:
             return None
@@ -437,14 +446,16 @@ def init_enterprise(app) -> None:
                 return Response("Cross-origin form submission is not allowed.", status=403)
             if not validate_csrf():
                 return Response("The form expired or its security token is invalid. Reload the page and try again.", status=403)
-        factor_endpoints = {"mfa.enroll", "mfa.challenge", "mfa.recover", "mfa.replace", "enterprise.logout"}
+        factor_endpoints = {"mfa.enroll", "mfa.challenge", "mfa.recover", "mfa.replace", "enterprise.logout",
+                            "passkeys.authenticate_begin", "passkeys.authenticate_complete"}
         if g.user and not (session.get("mfa_verified") is True and g.user["mfa_secret"]) and endpoint not in factor_endpoints:
             return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
         admin_endpoints = {"create_authority", "revoke_authority", "delete_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
                            "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
                            "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now",
-                           "backup.settings", "backup.export", "monitoring.settings", "monitoring.check_now",
-                           "certificate_profiles.manage", "automation.settings", "automation.run_now", "acme_admin.settings"}
+                           "backup.settings", "backup.export", "monitoring.settings", "monitoring.check_now", "approvals.pending", "approvals.reject",
+                           "certificate_profiles.manage", "automation.settings", "automation.run_now", "acme_admin.settings",
+                           "scep_est_admin.settings"}
         operator_endpoints = {"create_certificate", "revoke_certificate", "renewal.renew", "inventory.update_metadata"}
         if endpoint in admin_endpoints and not can_manage("admin"):
             abort(403)
@@ -453,7 +464,11 @@ def init_enterprise(app) -> None:
         if endpoint in {"download_authority", "download_certificate"} and (request.view_args or {}).get("artifact") == "key":
             if not can_manage("admin") or not get_setting("allow_key_export"):
                 abort(403)
-        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {"enterprise.setup", "enterprise.login", "enterprise.password", "identity.oidc_start", "mfa.account", "backup.restore"}
+        known_mutations = admin_endpoints | operator_endpoints | factor_endpoints | {
+            "enterprise.setup", "enterprise.login", "enterprise.password", "identity.oidc_start",
+            "mfa.account", "backup.restore", "passkeys.register_begin", "passkeys.register_complete",
+            "passkeys.remove",
+        }
         if request.method not in {"GET", "HEAD", "OPTIONS"} and endpoint not in known_mutations:
             abort(403)
 
@@ -550,6 +565,10 @@ def logout():
 @require_roles("admin")
 def settings():
     if request.method == "POST":
+        from approvals import approval_gate
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         try:
             values = _settings_from_form()
             tls_pem = _tls_upload()
@@ -577,8 +596,12 @@ def settings():
 @require_roles("admin")
 def users():
     from identity import user_allowed, validate_binding
+    from approvals import approval_gate
     db = _db()
     if request.method == "POST":
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         try:
             action = request.form.get("action", "create")
             if action == "create":
@@ -618,6 +641,12 @@ def users():
                     admins = sum(user_allowed(admin) for admin in db.execute("SELECT * FROM users WHERE role = 'admin' AND active = 1"))
                     if user["active"] and user["role"] == "admin" and user_allowed(user) and admins <= 1:
                         raise ValueError("The last active administrator cannot be deactivated.")
+                    if (get_setting("require_dual_approval", False) and user["active"]
+                            and user["role"] == "admin" and user["mfa_secret"]):
+                        eligible = db.execute("""SELECT COUNT(*) FROM users
+                            WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL AND mfa_secret != ''""").fetchone()[0]
+                        if eligible <= 2:
+                            raise ValueError("At least two active MFA-enrolled administrators must remain while four-eyes approval is enabled.")
                     db.execute("UPDATE users SET active = 0, session_version = session_version + 1 WHERE id = ?", (user_id,))
                 elif action == "activate":
                     db.execute("UPDATE users SET active = 1, session_version = session_version + 1 WHERE id = ?", (user_id,))

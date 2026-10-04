@@ -876,6 +876,10 @@ def settings():
     db = _db()
     credential = None
     if request.method == "POST":
+        from approvals import approval_gate
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         try:
             action = request.form.get("action")
             db.execute("BEGIN IMMEDIATE")

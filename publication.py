@@ -318,6 +318,10 @@ def settings():
     db = get_db()
     status = 200
     if request.method == "POST":
+        from approvals import approval_gate
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         with publication_lock() as acquired:
             if not acquired:
                 flash("A publication is running. Wait for it to finish before changing its target.", "warning")
@@ -350,6 +354,10 @@ def settings():
 @publication.post("/publication/publish")
 @require_roles("admin")
 def publish_now():
+    from approvals import approval_gate
+    approval_response = approval_gate()
+    if approval_response is not None:
+        return approval_response
     from app import get_db
     db = get_db()
     queue_publication(db)

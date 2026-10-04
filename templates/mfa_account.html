@@ -23,4 +23,9 @@
   </form>
   <p class="muted">A code already used to sign in cannot authorize another action. Wait for the next 30-second code if needed.</p>
 </section>
+<section class="card">
+  <h2>Passkeys</h2>
+  <p>Register a device-bound authenticator or synchronized passkey as a phishing-resistant second factor. Your current authenticator remains available for recovery.</p>
+  <a class="button secondary" href="{{ url_for('passkeys.manage') }}">Manage passkeys</a>
+</section>
 {% endblock %}

@@ -1,5 +1,6 @@
 """Recovery exercises real authentication, encrypted CA material and audit checks."""
 from contextlib import closing
+import hashlib
 import io
 import json
 import os
@@ -18,9 +19,9 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from app import create_app, decrypt_private_key, get_db
 from audit_integrity import verify_chain
-from backup import (BackupError, MAGIC, MARKER, RestoreBusy, _worker_lock, apply_pending_restore,
+from backup import (BackupError, MAGIC, MARKER, SIGNED_MAGIC, RestoreBusy, _worker_lock, apply_pending_restore,
                     create_snapshot, decrypt_archive, encrypt_archive, pack_snapshot, restore_pending,
-                    stage_restore, unpack_snapshot)
+                    sign_archive, stage_restore, unpack_snapshot, verify_signed_archive)
 from mfa import code_at_counter, decrypt_secret, time_counter
 from mfa_helpers import complete_mfa
 from pkimaster_server import ensure_bootstrap_tls, runtime_application
@@ -122,7 +123,28 @@ class BackupWorkflowTests(unittest.TestCase):
             response = self.post(self.client, "/settings/backup/export", {"passphrase": PASSPHRASE,
                 "passphrase_confirm": PASSPHRASE, "totp_code": code})
         self.assertEqual(response.status_code, 200, response.data[:1000])
+        self.signer_fingerprint = response.headers["X-PKIMaster-Backup-Signer-SHA256"]
+        self.assertTrue(response.data.startswith(SIGNED_MAGIC))
         return response.data
+
+    def decrypt_export(self, archive):
+        return decrypt_archive(verify_signed_archive(archive, self.signer_fingerprint), PASSPHRASE)
+
+    def test_provenance_signatures_authenticate_ciphertext_before_decryption(self):
+        ciphertext = encrypt_archive(b"recoverable state", PASSPHRASE)
+        with self.app.app_context():
+            signed, fingerprint = sign_archive(ciphertext)
+            self.assertTrue(signed.startswith(SIGNED_MAGIC))
+            self.assertEqual(verify_signed_archive(signed, fingerprint), ciphertext)
+            with self.assertRaisesRegex(BackupError, "trusted fingerprint"):
+                verify_signed_archive(signed, "0" * 64)
+            tampered = signed[:-1] + bytes([signed[-1] ^ 1])
+            with self.assertRaisesRegex(BackupError, "signature is invalid"):
+                verify_signed_archive(tampered, fingerprint)
+            self.assertEqual(decrypt_archive(verify_signed_archive(signed, fingerprint), PASSPHRASE),
+                             b"recoverable state")
+            key_path = self.root / "backup-provenance-ed25519.pem"
+            self.assertTrue(key_path.is_file())
 
     def fresh(self):
         directory = tempfile.TemporaryDirectory()
@@ -132,7 +154,9 @@ class BackupWorkflowTests(unittest.TestCase):
         return root, app, app.test_client()
 
     def restore(self, client, encrypted, **updates):
-        values = {"archive": (io.BytesIO(encrypted), "backup.pkibackup"), "passphrase": PASSPHRASE, "source_stopped": "on"}
+        values = {"archive": (io.BytesIO(encrypted), "backup.pkibackup"), "passphrase": PASSPHRASE,
+                  "source_stopped": "on", "expected_signer_sha256": getattr(self, "signer_fingerprint", ""),
+                  "expected_sha256": hashlib.sha256(encrypted).hexdigest()}
         values.update(updates)
         return self.post(client, "/restore", values)
 
@@ -153,8 +177,9 @@ class BackupWorkflowTests(unittest.TestCase):
         old_cookie = self.client.get_cookie("session").value
         encrypted = self.export()
         self.assertNotIn(original_secret.encode(), encrypted)
-        files = unpack_snapshot(decrypt_archive(encrypted, PASSPHRASE))
+        files = unpack_snapshot(self.decrypt_export(encrypted))
         self.assertEqual(files["server-tls/bootstrap.pem"], tls)
+        self.assertNotIn("backup-provenance-ed25519.pem", files)
         self.assertIn("softhsm/tokens/token-123/object.object", files)
         fresh_root, fresh_app, fresh_client = self.fresh()
         staged = self.restore(fresh_client, encrypted)
@@ -205,6 +230,8 @@ class BackupWorkflowTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 401)
         self.assertEqual(accepted.headers["Cache-Control"], "no-store")
         self.assertIn(".pkibackup", accepted.headers["Content-Disposition"])
+        self.assertIn(accepted.headers["X-PKIMaster-Backup-Signer-SHA256"].encode(),
+                      self.client.get("/settings/backup", base_url=self.base).data)
         with self.app.app_context():
             audit = " ".join(row[0] for row in get_db().execute("SELECT detail FROM audit_events"))
             self.assertNotIn(PASSPHRASE, audit)
@@ -212,6 +239,30 @@ class BackupWorkflowTests(unittest.TestCase):
             get_db().commit()
         self.assertEqual(self.client.get("/settings/backup", base_url=self.base).status_code, 403)
         self.assertEqual(self.post(self.client, "/settings/backup/export", values).status_code, 403)
+
+    def test_restore_requires_trusted_signer_pin_and_refuses_modified_signed_archive(self):
+        encrypted = self.export()
+        root, app, client = self.fresh()
+        untrusted = self.restore(client, encrypted, expected_signer_sha256="0" * 64)
+        self.assertEqual(untrusted.status_code, 400)
+        self.assertIn(b"trusted fingerprint", untrusted.data)
+        self.assertFalse(restore_pending(root))
+        tampered = encrypted[:-1] + bytes([encrypted[-1] ^ 1])
+        damaged = self.restore(client, tampered, expected_sha256="")
+        self.assertEqual(damaged.status_code, 400)
+        self.assertIn(b"signature is invalid", damaged.data)
+        self.assertFalse(restore_pending(root))
+
+    def test_restore_requires_independent_archive_hash_for_unsigned_legacy_backup(self):
+        archive = encrypt_archive(pack_snapshot({
+            "pkimaster.sqlite": b"database", "runtime-secrets.json": b"secrets",
+            "pkimaster.audit-sealed": b"seal",
+        }), PASSPHRASE)
+        root, app, client = self.fresh()
+        response = self.restore(client, archive, expected_sha256="")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"legacy unsigned archive", response.data)
+        self.assertFalse(restore_pending(root))
 
     def test_failed_restore_leaves_fresh_installation_usable_and_installed_restore_is_unavailable(self):
         encrypted = self.export()
@@ -229,7 +280,7 @@ class BackupWorkflowTests(unittest.TestCase):
         self.assertEqual(self.restore(client, encrypted, source_stopped="").status_code, 400)
 
     def test_restore_rejects_validly_encrypted_archive_with_broken_key_or_audit(self):
-        files = unpack_snapshot(decrypt_archive(self.export(), PASSPHRASE))
+        files = unpack_snapshot(self.decrypt_export(self.export()))
         broken = dict(files)
         payload = json.loads(broken["runtime-secrets.json"])
         payload["KEY_ENCRYPTION_SECRET"] = "a wrong encryption secret"
@@ -248,7 +299,7 @@ class BackupWorkflowTests(unittest.TestCase):
         (self.root / "runtime-https.json").write_text("runtime cache", encoding="utf-8")
         (self.root / "publication.lock").touch()
         encrypted = self.export()
-        files = unpack_snapshot(decrypt_archive(encrypted, PASSPHRASE))
+        files = unpack_snapshot(self.decrypt_export(encrypted))
         self.assertNotIn("runtime-https.json", files)
         self.assertNotIn("publication.lock", files)
         root, app, client = self.fresh()
@@ -276,7 +327,7 @@ class BackupWorkflowTests(unittest.TestCase):
         create_app({"TESTING": True, "INSTANCE_PATH": str(root)})
 
     def test_staging_rechecks_freshness_under_database_write_lock(self):
-        files = unpack_snapshot(decrypt_archive(self.export(), PASSPHRASE))
+        files = unpack_snapshot(self.decrypt_export(self.export()))
         with self.app.app_context(), self.assertRaisesRegex(BackupError, "fresh installation"):
             stage_restore(get_db(), files)
         self.assertFalse(restore_pending(self.root))

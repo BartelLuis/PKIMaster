@@ -13,6 +13,20 @@ snapshot with changes to managed keys and web TLS files; the publication lock ke
 the publication worker out of that snapshot. Ordinary CA-key download policy is
 unchanged: this separate operation is an encrypted disaster-recovery export.
 
+Each newly created archive signs its encrypted bytes using a local Ed25519
+provenance key. The backup page displays the signer's SHA-256 public-key
+fingerprint. Record that fingerprint through a separate trusted channel before
+moving the backup to another host. Recovery verifies the signature and pin
+before attempting decryption or staging files; an archive cannot establish its
+own trust fingerprint. The private provenance key is held in the instance
+directory with restricted file permissions and is deliberately excluded from
+the snapshot. A restored host therefore starts a new signing identity. Keep
+the old public fingerprint to verify old archives.
+
+Backups created before signed provenance was introduced are unsigned. For those
+archives, recovery requires an independently recorded archive SHA-256. This
+compatibility mode does not provide signer authentication.
+
 External PKCS#11/HSM and Azure private keys stay in their providers. Their references
 and credentials are backed up, but provider availability, installed modules and
 access on the replacement host remain necessary. Remote published files, package
@@ -72,7 +86,7 @@ before restarting. Never remove the marker to force a partially installed state 
 
 ## Format and cryptography
 
-Format 1 uses a random 16-byte salt and 12-byte nonce, scrypt with fixed
+The encrypted payload format 1 uses a random 16-byte salt and 12-byte nonce, scrypt with fixed
 `N=2^17, r=8, p=1` (128 MiB), and AES-256-GCM. The version, salt and nonce are
 authenticated alongside the ciphertext. Passwords and archive contents are never
 written to audit events or logs. The decrypted archive has an authenticated manifest

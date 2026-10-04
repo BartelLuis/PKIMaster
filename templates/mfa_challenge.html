@@ -9,6 +9,14 @@
     <label>Authenticator code <input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="one-time-code" required autofocus></label>
     <button type="submit">Verify code and sign in</button>
   </form>
+  {% if passkey_available %}
+  <div class="section-divider"></div>
+  <button class="secondary" type="button" data-passkey-auth
+          data-begin-url="{{ url_for('passkeys.authenticate_begin') }}"
+          data-complete-url="{{ url_for('passkeys.authenticate_complete') }}">Use a passkey</button>
+  <p class="form-hint" data-passkey-message role="status">Use a registered passkey on this device or a synced device.</p>
+  <script src="{{ url_for('static', filename='js/passkeys.js') }}" defer></script>
+  {% endif %}
   <p class="muted">Each code can be used once. If you have just signed in elsewhere, wait for the next code. Keep your authenticator clock synchronized.</p>
   <p><a href="{{ url_for('mfa.recover') }}">Lost your authenticator? Use a recovery code</a></p>
 </section>

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">Enrollment</span><h1>SCEP / EST enrollment</h1>
+<p>Opt-in certificate enrollment for managed devices. Enrollment requires one-use credentials and an enabled certificate template.</p></div></div>
+<section class="card"><h2>Service</h2>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="save">
+<label class="checkbox-label"><input type="checkbox" name="enabled" {% if config.enabled %}checked{% endif %}> Enable SCEP / EST endpoints</label>
+<div class="form-grid">
+<label class="checkbox-label"><input type="checkbox" name="scep" {% if config.scep %}checked{% endif %}> SCEP PKCSReq</label>
+<label class="checkbox-label"><input type="checkbox" name="est" {% if config.est %}checked{% endif %}> EST simpleenroll</label>
+<label>Maximum credential lifetime (days)<input type="number" name="validity_days" min="1" max="825" value="{{ config.validity_days }}" required></label>
+</div>
+<p class="form-hint">Both services are disabled by default. Enabling requires an HTTPS public base URL and an active Issuing CA. SCEP currently requires a software RSA CA key.</p>
+<button type="submit">Save enrollment settings</button></form></section>
+{% if credential %}<section class="card"><h2>New one-use credential</h2>
+<p class="notice">Copy this secret now. Only its SHA-256 hash is retained; this credential expires in one year or immediately after a successful enrollment.</p>
+<dl><dt>Credential ID</dt><dd><code>{{ credential.id }}</code></dd><dt>Secret</dt><dd><code>{{ credential.secret }}</code></dd></dl>
+<p>EST: use the ID and secret as HTTP Basic username and password. SCEP: place the secret in the CSR's challengePassword attribute.</p>
+</section>{% endif %}
+<section class="card"><h2>Create device credential</h2>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="create_credential">
+<div class="form-grid">
+<label>Device / deployment label<input name="label" maxlength="100" required></label>
+<label>Protocol<select name="protocol" required><option value="est">EST</option><option value="scep">SCEP</option></select></label>
+<label>Certificate template<select name="template_id" required><option value="">Select a template</option>{% for item in templates if item.enabled %}<option value="{{ item.id }}">{{ item.name }} — {{ item.profile }}</option>{% endfor %}</select></label>
+<label>Validity (days)<input type="number" name="validity_days" min="1" max="{{ config.validity_days }}" value="{{ config.validity_days }}" required></label>
+</div>
+<label>Permitted DNS names<textarea name="domains" rows="3" required placeholder="device.example.com&#10;hosts.example.com"></textarea></label>
+<p class="form-hint">Provide exact DNS suffixes; wildcards and IP addresses are not accepted here. The template's own DNS/IP policies are also enforced.</p>
+<button type="submit" {% if not config.enabled or not (config.scep or config.est) %}disabled{% endif %}>Generate one-use credential</button></form></section>
+<section class="card"><h2>Credentials</h2><div class="table-wrap"><table><thead><tr><th>Label</th><th>Protocol</th><th>Scope</th><th>Validity</th><th>Expires</th><th>Status</th><th></th></tr></thead><tbody>
+{% for item in credentials %}<tr><td>{{ item.label }}</td><td>{{ item.protocol|upper }}</td><td>{{ item.domains }}<br>Template {{ item.template_id }}, CA {{ item.authority_id }}</td><td>{{ item.validity_days }} days</td><td>{{ item.expires }}</td><td>{{ 'Used' if item.used_at else 'Revoked' if item.revoked else 'Available' }}</td><td>{% if not item.used_at and not item.revoked %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="revoke_credential"><input type="hidden" name="id" value="{{ item.id }}"><button class="danger" type="submit">Revoke</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="7">No credentials have been generated.</td></tr>{% endfor %}
+</tbody></table></div></section>
+{% endblock %}

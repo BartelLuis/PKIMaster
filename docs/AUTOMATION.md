@@ -36,30 +36,25 @@ bound to its CA ID; creating a replacement CA requires reviewing the URLs.
 The browser generates its recovery key using Web Crypto. It never sends the
 private key to the CA. The CA stores only the public recipient key and its
 SHA-256 fingerprint. Scheduled archives use a version-2 envelope: a fresh
-AES-256-GCM key encrypts the existing consistent state snapshot;
-RSA-OAEP with SHA-256 encrypts the AES key. The envelope header is authenticated
-as GCM additional data. This protects archive integrity during decryption, but
-does **not** authenticate its producer: anyone holding the public recipient key
-can encrypt a new archive, including a self-consistent database and new internal
-audit secrets. Internal database/audit validation cannot establish that such an
-archive came from your original installation.
-
-Only restore archives from a trusted source. The Automation page displays the
-last delivered archive's SHA-256; retain it independently of the SFTP storage,
-along with the public recovery-key fingerprint. Recovery accepts an optional
-independently recorded archive SHA-256 and rejects a mismatch **before**
-decryption. A checksum delivered beside an untrusted archive does not establish
-its origin; the retained value must come from your trusted original installation
-or an independently protected record. The recipient fingerprint identifies the
+AES-256-GCM key encrypts the existing consistent state snapshot; RSA-OAEP with
+SHA-256 encrypts the AES key. The envelope header is authenticated as GCM
+additional data. The resulting ciphertext is signed using the installation's
+independent Ed25519 provenance key. The Automation page displays the signer's
+SHA-256 fingerprint; record it separately from the archive and SFTP destination.
+During recovery, PKIMaster verifies this pin and signature **before** decryption
+and database validation. A separately retained archive checksum is an optional
+additional transfer-integrity check. The recipient fingerprint identifies the
 decryption key, not the archive's producer.
 
 The private recovery key is only supplied to a fresh
-host during an explicit restore. The original passphrase-encrypted version-1
-manual backup and TOTP workflow remain available and compatible.
+host during an explicit restore. The manual passphrase-encrypted payload and
+TOTP workflow remain available. Older, unsigned archives require an independently
+recorded archive SHA-256 and do not provide signer authentication.
 
-On the fresh host's recovery page, select the scheduled `.pkibackup` and matching
-private recovery key. For an externally generated encrypted private key, enter
-its passphrase. For a manual version-1 archive, enter the archive passphrase.
+On the fresh host's recovery page, select the scheduled `.pkibackup`, matching
+private recovery key and independently retained provenance fingerprint. For an
+externally generated encrypted private key, enter its passphrase. For a manual
+backup, enter the archive passphrase.
 Recovery retains the existing database, audit, key, host-isolation and
 single-active-installation checks. External HSM key material cannot be recreated
 from a local software backup and still needs its provider's recovery process.

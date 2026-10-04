@@ -1,3 +1,14 @@
+pkimaster (0.5.0~rc1-1) trixie; urgency=medium
+
+  * Add optional independent four-eyes approvals for high-impact administration.
+  * Support new-key intermediate, issuing and root CA rollover with overlap.
+  * Sign manual and scheduled encrypted backups with pinned Ed25519 provenance.
+  * Add WebAuthn passkeys as an optional phishing-resistant second factor.
+  * Add opt-in SCEP and EST enrollment under template and domain policy.
+  * Package the new services, settings pages, tests and operator documentation.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 04 Oct 2026 20:45:00 +0200
+
 pkimaster (0.4.0-1) trixie; urgency=medium
 
   * Add controlled ACME enrollment, issuance, renewal and account management.

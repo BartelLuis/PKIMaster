@@ -19,6 +19,7 @@ from cryptography.x509.oid import NameOID
 from flask import Flask, Response, current_app, flash, g, redirect, render_template, request, session, url_for
 from werkzeug.utils import secure_filename
 
+from approvals import approval_gate
 from enterprise import audit_event, can_manage, configure_runtime, get_setting, init_enterprise
 from pki import (REVOCATION_REASONS, create_ca_certificate, create_ca_request,
                  issue_end_entity_certificate, sign_ca_request, validate_ca_activation, valid_parent_child_roles, crl_signature_is_valid)
@@ -214,10 +215,15 @@ def create_app(test_config: dict | None = None) -> Flask:
     init_automation(app)
     from acme_service import init_acme
     init_acme(app)
+    from scep_est import init_scep_est
+    init_scep_est(app)
+    from passkeys import init_passkeys
+    init_passkeys(app)
 
     @app.before_request
     def protect_audit_integrity():
-        if request.method not in {"GET", "HEAD", "OPTIONS"} and request.blueprint != "acme_protocol":
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and request.blueprint not in {
+                "acme_protocol", "scep_protocol", "est_protocol"}:
             try:
                 verify_chain(get_db(), app.config["KEY_ENCRYPTION_SECRET"])
             except AuditIntegrityError:
@@ -244,8 +250,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         return render_template("index.html", title="Certificate inventory", authorities=authorities,
                                authority=authority, archived_authorities=[item for item in authorities if item["revoked_at"]],
                                block_reason=authority_block_reason(authority) if authority else "",
-                               ca_requests=db.execute("SELECT r.*, u.username AS requester, a.name AS authority_name FROM ca_requests r LEFT JOIN users u ON u.id=r.requested_by JOIN authorities a ON a.id=r.authority_id ORDER BY r.id DESC LIMIT 100").fetchall(),
-                               issued_authorities=db.execute("SELECT i.*, a.name AS authority_name FROM issued_authorities i JOIN authorities a ON a.id=i.authority_id ORDER BY i.id DESC LIMIT 100").fetchall(),
+                               ca_requests=db.execute("""SELECT r.*, u.username AS requester, a.name AS authority_name,
+                                   old.common_name AS rollover_of_name FROM ca_requests r
+                                   LEFT JOIN users u ON u.id=r.requested_by JOIN authorities a ON a.id=r.authority_id
+                                   LEFT JOIN issued_authorities old ON old.id=r.rollover_of
+                                   ORDER BY r.id DESC LIMIT 100""").fetchall(),
+                               issued_authorities=db.execute("""SELECT i.*, a.name AS authority_name,
+                                   old.common_name AS rollover_of_name FROM issued_authorities i
+                                   JOIN authorities a ON a.id=i.authority_id
+                                   LEFT JOIN issued_authorities old ON old.id=i.rollover_of
+                                   ORDER BY i.id DESC LIMIT 100""").fetchall(),
                                certificates=certificates, issuing_authorities=issuing,
                                active_authority_ids=active_authority_ids, key_download_enabled=key_download_enabled(),
                                revocation_reasons=REVOCATION_REASONS, now=utc_now().isoformat(),
@@ -270,6 +284,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/authorities")
     def create_authority() -> Response:
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         name = request.form.get("name", "").strip()
         role = request.form.get("role", "").strip().lower()
         common_name = request.form.get("common_name", "").strip()
@@ -319,6 +336,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/ca/activate")
     def activate_authority() -> Response:
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -347,6 +367,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/ca/parent-crls")
     def update_parent_crls() -> Response:
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -397,7 +420,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         try:
             db.execute("BEGIN IMMEDIATE")
             authority = current_authority(db)
-            role = request.form.get("role", "")
+            rollover_kind = request.form.get("rollover_kind", "")
+            rollover_of = request.form.get("rollover_of", "").strip()
+            if rollover_kind not in {"", "root_cross_sign"}:
+                raise ValueError("Select a supported CA rollover action.")
+            if rollover_kind == "root_cross_sign":
+                if authority is None or authority["role"] != "root" or rollover_of:
+                    raise ValueError("A root rollover cross-certificate must be signed by the current Root CA and cannot replace a subordinate CA.")
+                role = "intermediate"
+            else:
+                role = request.form.get("role", "")
             if not authority or not valid_parent_child_roles(authority["role"], role) or not authority_is_active(authority):
                 raise ValueError("An active Root or Intermediate CA with a permitted child role is required.")
             csr_pem = request.form.get("csr_pem", "").strip()
@@ -407,11 +439,29 @@ def create_app(test_config: dict | None = None) -> Flask:
             names = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
             if len(names) != 1:
                 raise ValueError("The CSR must contain one common name.")
+            rollover_id = None
+            if rollover_of:
+                if not rollover_of.isascii() or not rollover_of.isdigit() or len(rollover_of) > 18:
+                    raise ValueError("Select a valid existing subordinate CA for rollover.")
+                previous = db.execute("SELECT * FROM issued_authorities WHERE id=?", (int(rollover_of),)).fetchone()
+                if not previous or previous["revoked_at"] or previous["role"] != role or previous["common_name"] != names[0].value:
+                    raise ValueError("A subordinate CA rollover must use the same common name and role as an active CA signed by this server.")
+                previous_public_key = x509.load_pem_x509_certificate(previous["certificate_pem"].encode()).public_key()
+                current_public_key = csr.public_key()
+                public_format = (serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+                if current_public_key.public_bytes(*public_format) == previous_public_key.public_bytes(*public_format):
+                    raise ValueError("A CA rollover must use a new, distinct signing key.")
+                rollover_id, rollover_kind = previous["id"], "subordinate"
             days = parse_positive_int(request.form.get("validity_days"), 365, 1, 7300)
             fingerprint = hashlib.sha256(csr.public_bytes(serialization.Encoding.DER)).hexdigest()
-            result = db.execute("INSERT INTO ca_requests (authority_id, common_name, role, validity_days, csr_pem, fingerprint, requested_by) VALUES (?,?,?,?,?,?,?)",
-                (authority["id"], names[0].value, role, days, csr.public_bytes(serialization.Encoding.PEM).decode(), fingerprint, g.user["id"]))
-            audit_event("ca_request.submitted", "ca_request", str(result.lastrowid), fingerprint)
+            result = db.execute("""INSERT INTO ca_requests
+                (authority_id, common_name, role, validity_days, csr_pem, fingerprint, requested_by, rollover_of, rollover_kind)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (authority["id"], names[0].value, role, days,
+                 csr.public_bytes(serialization.Encoding.PEM).decode(), fingerprint, g.user["id"],
+                 rollover_id, rollover_kind))
+            audit_event("ca_request.submitted", "ca_request", str(result.lastrowid),
+                        fingerprint + ("; rollover=" + (rollover_kind or "") if rollover_kind else ""))
             db.commit()
             flash("CA request recorded. A different administrator must review and approve it before signing.", "success")
         except (UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType):
@@ -437,18 +487,24 @@ def create_app(test_config: dict | None = None) -> Flask:
             authority = get_authority(pending["authority_id"])
             if not authority_is_active(authority):
                 raise ValueError(authority_block_reason(authority))
-            pem, serial, start, end = sign_ca_request(pending["csr_pem"], pending["role"], pending["validity_days"],
+            signing_role = "intermediate" if pending["rollover_kind"] == "root_cross_sign" else pending["role"]
+            pem, serial, start, end = sign_ca_request(pending["csr_pem"], signing_role, pending["validity_days"],
                 authority["role"], authority["certificate_pem"], authority_signing_key(authority),
                 crl_url=crl_distribution_url(authority["id"]), aia_url=issuer_certificate_url(authority["id"]),
                 issuer_chain_pem=authority["parent_chain_pem"])
-            result = db.execute("INSERT INTO issued_authorities (authority_id, common_name, role, certificate_pem, serial_number, not_before, not_after) VALUES (?,?,?,?,?,?,?)",
-                (authority["id"], pending["common_name"], pending["role"], pem, serial, start, end))
+            result = db.execute("""INSERT INTO issued_authorities
+                (authority_id, common_name, role, certificate_pem, serial_number, not_before, not_after, rollover_of, rollover_kind)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (authority["id"], pending["common_name"], signing_role, pem, serial, start, end,
+                 pending["rollover_of"], pending["rollover_kind"]))
             db.execute("UPDATE ca_requests SET status='approved', reviewed_by=?, reviewed_at=?, issued_id=? WHERE id=?",
                 (g.user["id"], utc_now().isoformat(), result.lastrowid, request_id))
             audit_event("ca_request.approved", "ca_request", str(request_id), f"requester={pending['requested_by']}; sha256={pending['fingerprint']}")
-            audit_event("subordinate.issued", "issued_authority", str(result.lastrowid), pending["common_name"])
+            audit_event("subordinate.issued", "issued_authority", str(result.lastrowid),
+                        pending["common_name"] + ("; rollover=" + pending["rollover_kind"] if pending["rollover_kind"] else ""))
             db.commit()
-            flash("Subordinate CA certificate signed. Transfer its certificate and parent chain to its own server.", "success")
+            flash("Root rollover cross-certificate signed. Distribute it with the new Root certificate to relying parties." if pending["rollover_kind"] == "root_cross_sign"
+                  else "Subordinate CA certificate signed. Transfer its certificate and parent chain to its own server.", "success")
         except (ValueError, sqlite3.IntegrityError) as error:
             db.rollback()
             flash(str(error) if isinstance(error, ValueError) else "The CA request could not be signed.", "error")
@@ -470,6 +526,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/certificates")
     def create_certificate() -> Response:
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         common_name = request.form.get("common_name", "").strip()
         authority_id = request.form.get("authority_id", "").strip()
         maximum = int(get_setting("max_leaf_days", 397))
@@ -518,6 +577,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         return redirect(url_for("index"))
 
     def revoke(table: str, record_id: int) -> Response:
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         if not 0 < record_id <= 9223372036854775807:
             return Response("Not found", status=404)
         db = get_db()
@@ -558,6 +620,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.post("/authorities/<int:authority_id>/delete")
     def delete_authority(authority_id: int) -> Response:
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         if not 0 < authority_id <= 9223372036854775807:
             return Response("Not found", status=404)
         db = get_db()
@@ -660,6 +725,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         authority = get_authority(authority_id)
         if authority is None:
             return Response("Not found", status=404)
+        if artifact == "rollover-csr":
+            if authority["role"] != "root" or authority["state"] != "active" or authority["revoked_at"]:
+                return Response("A rollover CSR is available only for an active Root CA.", status=409)
+            if not authority_is_active(authority):
+                return Response(authority_block_reason(authority), status=409)
+            signer = authority_signing_key(authority)
+            if isinstance(signer, str):
+                signer = serialization.load_pem_private_key(signer.encode(), password=None)
+            csr, _ = create_ca_request(authority["common_name"], "root", signer=signer)
+            return text_download(authority["name"], "root-rollover.csr.pem", csr)
         if artifact == "cert":
             if authority["state"] != "active":
                 return Response("The local CA is awaiting activation.", status=409)
@@ -749,7 +824,9 @@ def init_db(app: Flask) -> None:
               common_name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('intermediate','issuing')),
               certificate_pem TEXT NOT NULL, serial_number TEXT NOT NULL UNIQUE,
               not_before TEXT NOT NULL, not_after TEXT NOT NULL,
-              revoked_at TEXT, revocation_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+              revoked_at TEXT, revocation_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              rollover_of INTEGER REFERENCES issued_authorities(id) ON DELETE SET NULL,
+              rollover_kind TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS ca_requests (
               id INTEGER PRIMARY KEY AUTOINCREMENT, authority_id INTEGER NOT NULL REFERENCES authorities(id),
@@ -758,10 +835,18 @@ def init_db(app: Flask) -> None:
               requested_by INTEGER NOT NULL, reviewed_by INTEGER, reviewed_at TEXT,
               status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
               issued_id INTEGER REFERENCES issued_authorities(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              rollover_of INTEGER REFERENCES issued_authorities(id) ON DELETE SET NULL,
+              rollover_kind TEXT NOT NULL DEFAULT '',
               CHECK(status != 'approved' OR (reviewed_by IS NOT NULL AND requested_by != reviewed_by AND issued_id IS NOT NULL))
             );
         """)
         connection.execute("BEGIN IMMEDIATE")
+        for table in ("issued_authorities", "ca_requests"):
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if "rollover_of" not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN rollover_of INTEGER REFERENCES issued_authorities(id) ON DELETE SET NULL")
+            if "rollover_kind" not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN rollover_kind TEXT NOT NULL DEFAULT ''")
         for table in ("authorities", "certificates"):
             columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
             for name in ("revoked_at", "revocation_reason"):
@@ -798,7 +883,8 @@ def init_db(app: Flask) -> None:
             CREATE TRIGGER IF NOT EXISTS preserve_active_ca_certificate BEFORE UPDATE OF certificate_pem, parent_chain_pem ON authorities
             WHEN OLD.state = 'active'
             BEGIN SELECT RAISE(ABORT, 'An active CA certificate cannot be replaced'); END;
-            CREATE TRIGGER IF NOT EXISTS immutable_ca_request BEFORE UPDATE OF authority_id, common_name, role, validity_days, csr_pem, fingerprint, requested_by ON ca_requests
+            DROP TRIGGER IF EXISTS immutable_ca_request;
+            CREATE TRIGGER immutable_ca_request BEFORE UPDATE OF authority_id, common_name, role, validity_days, csr_pem, fingerprint, requested_by, rollover_of, rollover_kind ON ca_requests
             BEGIN SELECT RAISE(ABORT, 'CA signing requests are immutable'); END;
             CREATE TRIGGER IF NOT EXISTS final_ca_decision BEFORE UPDATE ON ca_requests WHEN OLD.status != 'pending'
             BEGIN SELECT RAISE(ABORT, 'CA signing decisions are final'); END;

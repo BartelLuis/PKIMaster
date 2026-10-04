@@ -80,6 +80,13 @@ Upgrades preserve existing signed CA certificates, including any `pathLenConstra
 
 Version 0.4.0-1 adds templates, inventory metadata, ACME and automation state without rewriting existing certificates. Default browser templates preserve the earlier server/client/combined purposes under the installation's lifetime cap. ACME and all automation jobs remain disabled until configured; deployed TLS checks require explicit per-certificate configuration. Review and restrict templates before granting the ACME role.
 
+The 0.5.0-rc1 pre-release adds optional four-eyes approvals, CA rollover
+workflows, authenticated backup provenance, WebAuthn passkeys and disabled-by-
+default SCEP/EST enrollment. These controls improve workflow integrity and
+operational recovery but do not change the BSI certification status: PKIMaster
+is not certified, and deployment-specific separation of duties, hardware
+selection, external audit retention and tested trust migration remain required.
+
 Before upgrading an existing deployment, inventory its CAs and take a consistent protected backup of the entire state directory with the old service stopped. Retain the original database, encryption secrets, HTTPS identity, audit records and a verified copy of the previous package. Do not delete CA rows, drop database guards, copy a live SQLite file or generate replacement encryption secrets as a workaround.
 
 A multi-CA deployment needs a reviewed migration and trust-transition plan, separate hosts and a tested recovery procedure before this version is activated. The existing CA key export route is intentionally unavailable; use the retained previous deployment and controlled key-custody procedures when designing migration. Existing single-CA deployments preserve their stored key and certificate; each user must complete MFA enrollment at their next authenticated session. Restoring a backup onto a recovery host requires fencing/stopping the previous host so two active instances never use the same CA identity.

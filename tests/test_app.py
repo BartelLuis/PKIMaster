@@ -1,6 +1,9 @@
 """Browser and database enforcement for one local CA per installation."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import hashlib
+import hmac
+import json
 import re
 import sqlite3
 import tempfile
@@ -11,8 +14,13 @@ from unittest.mock import patch
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from werkzeug.security import generate_password_hash
 
 from app import authority_is_active, create_app, get_db
+from approvals import _payload
+from enterprise import get_setting
+from key_storage import authority_signing_key
+from mfa import code_at_counter, decrypt_secret, time_counter
 from mfa_helpers import complete_mfa
 import pki
 
@@ -115,6 +123,32 @@ class PKIMasterTestCase(unittest.TestCase):
         return self.post("/certificates", {"authority_id": str(authority_id), "common_name": "service.example",
             "validity_days": "397", "csr_pem": self.leaf_csr, "profile": "server", **changes})
 
+    def add_second_admin(self):
+        with self.app.app_context():
+            db = get_db()
+            encrypted_secret = db.execute("SELECT mfa_secret FROM users WHERE username='admin'").fetchone()[0]
+            db.execute("INSERT INTO users (username, password_hash, role, mfa_secret) VALUES (?, ?, 'admin', ?)",
+                       ("reviewer", generate_password_hash("reviewer-passphrase-123"), encrypted_secret))
+            db.commit()
+            return encrypted_secret
+
+    def reviewer_client(self, encrypted_secret):
+        client = self.app.test_client()
+        page = client.get("/login", base_url=self.base_url)
+        token = self.form_token(page)
+        response = client.post("/login", base_url=self.base_url,
+                               data={"csrf_token": token, "username": "reviewer",
+                                     "password": "reviewer-passphrase-123"})
+        self.assertEqual(response.status_code, 302)
+        challenge = client.get("/mfa/challenge", base_url=self.base_url)
+        with self.app.app_context():
+            secret = decrypt_secret(encrypted_secret)
+        code = code_at_counter(secret, time_counter())
+        verified = client.post("/mfa/challenge", base_url=self.base_url,
+                               data={"csrf_token": self.form_token(challenge), "code": code})
+        self.assertEqual(verified.status_code, 302)
+        return client
+
     def test_dashboard_and_public_health_endpoint(self):
         response = self.get("/")
         self.assertEqual(response.status_code, 200)
@@ -139,6 +173,243 @@ class PKIMasterTestCase(unittest.TestCase):
         self.assertEqual(self.count("authorities"), 1)
         self.assertEqual(self.local_ca()["private_key_pem"], first["private_key_pem"])
         self.assertEqual(len(x509.load_pem_x509_certificates(self.get("/authorities/1/chain").data)), 1)
+
+    def test_four_eyes_approval_is_default_off(self):
+        with self.app.app_context():
+            self.assertFalse(get_setting("require_dual_approval"))
+        self.create_ca()
+        self.assertEqual(self.count("approval_requests"), 0)
+
+    def test_enabling_four_eyes_requires_independent_approval(self):
+        reviewer = self.reviewer_client(self.add_second_admin())
+        payload = {
+            "organization": "Test PKI", "public_base_url": "https://pki.example",
+            "max_leaf_days": "397", "crl_days": "7", "session_minutes": "30",
+            "listen_address": "127.0.0.1", "https_port": "8443",
+            "require_dual_approval": "on",
+        }
+        self.post("/settings", payload)
+        self.assertEqual(self.count("approval_requests"), 1)
+        with self.app.app_context():
+            self.assertFalse(get_setting("require_dual_approval"))
+            pending = dict(get_db().execute("SELECT * FROM approval_requests").fetchone())
+        page = reviewer.get("/approvals", base_url=self.base_url)
+        token = re.search(rb'name="csrf_token" value="([^"]+)"', page.data).group(1).decode()
+        response = reviewer.post("/settings", base_url=self.base_url, follow_redirects=True,
+                                 data={"csrf_token": token, "approval_id": str(pending["id"]), **payload})
+        self.assertEqual(response.status_code, 200)
+        with self.app.app_context():
+            self.assertTrue(get_setting("require_dual_approval"))
+            self.assertEqual(get_db().execute("SELECT status FROM approval_requests").fetchone()[0], "approved")
+
+    def test_four_eyes_approval_requires_a_distinct_mfa_admin_and_replays_exact_action(self):
+        reviewer = self.reviewer_client(self.add_second_admin())
+        with self.app.app_context():
+            get_db().execute("UPDATE settings SET value='true' WHERE key='require_dual_approval'")
+            get_db().commit()
+
+        payload = {"name": "Approved Root", "role": "root", "common_name": "Approved Root", "validity_days": "365"}
+        response = self.post("/authorities", payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.count("authorities"), 0)
+        self.assertEqual(self.count("approval_requests"), 1)
+        with self.app.app_context():
+            pending = dict(get_db().execute("SELECT * FROM approval_requests").fetchone())
+
+        approval_page = reviewer.get("/approvals", base_url=self.base_url)
+        approval_token = re.search(rb'name="csrf_token" value="([^"]+)"', approval_page.data).group(1).decode()
+        approved = reviewer.post("/authorities", base_url=self.base_url, follow_redirects=True,
+                                 data={"csrf_token": approval_token, "approval_id": str(pending["id"]), **payload})
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(self.count("authorities"), 1)
+        with self.app.app_context():
+            decision = get_db().execute("SELECT * FROM approval_requests WHERE id=?", (pending["id"],)).fetchone()
+            self.assertEqual(decision["status"], "approved")
+            self.assertNotEqual(decision["requested_by"], decision["reviewed_by"])
+
+    def test_four_eyes_requester_cannot_approve_their_own_action(self):
+        encrypted_secret = self.add_second_admin()
+        reviewer = self.reviewer_client(encrypted_secret)
+        with self.app.app_context():
+            get_db().execute("UPDATE settings SET value='true' WHERE key='require_dual_approval'")
+            get_db().commit()
+        payload = {"name": "Self Approved Root", "role": "root", "common_name": "Self Approved Root",
+                   "validity_days": "365"}
+        self.post("/authorities", payload)
+        with self.app.app_context():
+            approval_id = get_db().execute("SELECT id FROM approval_requests").fetchone()[0]
+        token = self.form_token(self.get("/approvals"))
+        response = self.client.post("/authorities", base_url=self.base_url, follow_redirects=True,
+                                    data={"csrf_token": token, "approval_id": str(approval_id), **payload})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.count("authorities"), 0)
+        self.assertEqual(self.count("approval_requests"), 1)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT status FROM approval_requests").fetchone()[0], "pending")
+        self.assertEqual(reviewer.get("/").status_code, 200)
+
+    def test_four_eyes_commits_to_secret_without_storing_it(self):
+        reviewer = self.reviewer_client(self.add_second_admin())
+        with self.app.app_context():
+            get_db().execute("UPDATE settings SET value='true' WHERE key='require_dual_approval'")
+            get_db().commit()
+        password = "A securely exchanged test passphrase"
+        payload = {"action": "create", "username": "approved-user", "role": "operator", "password": password}
+        self.post("/users", payload)
+        self.assertEqual(self.count("users"), 2)
+        with self.app.app_context():
+            pending = dict(get_db().execute("SELECT * FROM approval_requests").fetchone())
+            secret_hashes = json.loads(pending["secret_hashes"])
+            secret_hash = hmac.new(
+                self.app.config["KEY_ENCRYPTION_SECRET"].encode(), password.encode(), hashlib.sha256
+            ).hexdigest()
+            self.assertEqual(secret_hashes, {"password": [secret_hash]})
+            self.assertNotIn(password, pending["form_data"])
+
+        def replay(secret):
+            page = reviewer.get("/approvals", base_url=self.base_url)
+            token = re.search(rb'name="csrf_token" value="([^"]+)"', page.data).group(1).decode()
+            return reviewer.post("/users", base_url=self.base_url, follow_redirects=True,
+                                 data={"csrf_token": token, "approval_id": str(pending["id"]),
+                                       **{**payload, "password": secret}})
+
+        mismatch = replay("A different test passphrase")
+        self.assertEqual(mismatch.status_code, 200)
+        self.assertEqual(self.count("users"), 2)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT status FROM approval_requests WHERE id=?", (pending["id"],)
+            ).fetchone()[0], "pending")
+        approved = replay(password)
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(self.count("users"), 3)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT status FROM approval_requests WHERE id=?", (pending["id"],)
+            ).fetchone()[0], "approved")
+
+    def test_approval_payload_does_not_retain_ephemeral_totp(self):
+        with self.app.test_request_context(
+                "/settings/automation", method="POST",
+                data={"totp_code": "123456", "csrf_token": "csrf"}):
+            fields, file_hashes, secret_fields, secret_hashes = _payload()
+        self.assertEqual(fields, {})
+        self.assertEqual(file_hashes, {})
+        self.assertEqual(secret_fields, ["totp_code"])
+        self.assertEqual(secret_hashes, {})
+
+    def test_four_eyes_keeps_two_mfa_reviewers_active(self):
+        reviewer_secret = self.add_second_admin()
+        reviewer = self.reviewer_client(reviewer_secret)
+        with self.app.app_context():
+            get_db().execute("UPDATE settings SET value='true' WHERE key='require_dual_approval'")
+            get_db().commit()
+            reviewer_id = get_db().execute("SELECT id FROM users WHERE username='reviewer'").fetchone()[0]
+        self.post("/users", {"action": "deactivate", "user_id": str(reviewer_id)})
+        page = reviewer.get("/approvals", base_url=self.base_url)
+        token = re.search(rb'name="csrf_token" value="([^"]+)"', page.data).group(1).decode()
+        result = reviewer.post(
+            "/users", base_url=self.base_url, follow_redirects=True,
+            data={"csrf_token": token, "approval_id": "1", "action": "deactivate",
+                  "user_id": str(reviewer_id)},
+        )
+        self.assertEqual(result.status_code, 400)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute(
+                "SELECT active FROM users WHERE id=?", (reviewer_id,)
+            ).fetchone()[0], 1)
+            self.assertEqual(get_db().execute(
+                "SELECT COUNT(*) FROM users WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL"
+            ).fetchone()[0], 2)
+
+    def test_root_rollover_csr_uses_the_new_root_key(self):
+        root = self.create_ca()
+        response = self.get(f"/authorities/{root['id']}/rollover-csr")
+        self.assertEqual(response.status_code, 200)
+        csr = x509.load_pem_x509_csr(response.data)
+        certificate = x509.load_pem_x509_certificate(root["certificate_pem"].encode())
+        self.assertTrue(csr.is_signature_valid)
+        self.assertEqual(csr.subject, certificate.subject)
+        self.assertEqual(
+            csr.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+            certificate.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+        )
+
+    def test_root_rollover_cross_certificate_uses_independent_ca_approval(self):
+        old_root = self.create_ca()
+        new_root_csr, _ = pki.create_ca_request("Replacement Root", "root")
+        self.post("/ca/requests", {
+            "role": "issuing", "rollover_kind": "root_cross_sign", "csr_pem": new_root_csr,
+            "validity_days": "365",
+        })
+        with self.app.app_context():
+            pending = dict(get_db().execute("SELECT * FROM ca_requests").fetchone())
+        self.assertEqual(pending["rollover_kind"], "root_cross_sign")
+        self.assertEqual(pending["role"], "intermediate")
+        reviewer = self.reviewer_client(self.add_second_admin())
+        page = reviewer.get("/", base_url=self.base_url)
+        token = self.form_token(page)
+        approved = reviewer.post(f"/ca/requests/{pending['id']}/approve", base_url=self.base_url,
+                                 data={"csrf_token": token}, follow_redirects=True)
+        self.assertEqual(approved.status_code, 200)
+        with self.app.app_context():
+            cross = get_db().execute("SELECT * FROM issued_authorities").fetchone()
+            root = get_db().execute("SELECT * FROM authorities WHERE id=?", (old_root["id"],)).fetchone()
+            cross_certificate = x509.load_pem_x509_certificate(cross["certificate_pem"].encode())
+            root_certificate = x509.load_pem_x509_certificate(root["certificate_pem"].encode())
+            requested = x509.load_pem_x509_csr(new_root_csr.encode())
+            self.assertEqual(cross["rollover_kind"], "root_cross_sign")
+            self.assertIsNone(root["revoked_at"])
+            self.assertEqual(cross_certificate.subject, requested.subject)
+            self.assertEqual(cross_certificate.public_key().public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+                requested.public_key().public_bytes(
+                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo))
+            cross_certificate.verify_directly_issued_by(root_certificate)
+
+    def test_subordinate_rollover_links_new_key_while_old_ca_stays_active(self):
+        parent = self.create_ca()
+        old_request, _ = pki.create_ca_request("Existing Issuer", "issuing")
+        with self.app.app_context():
+            db = get_db()
+            issuer = db.execute("SELECT * FROM authorities WHERE id=?", (parent["id"],)).fetchone()
+            signed = pki.sign_ca_request(
+                old_request, "issuing", 180, "root", issuer["certificate_pem"],
+                authority_signing_key(issuer),
+            )
+            old_id = db.execute("""INSERT INTO issued_authorities
+                (authority_id,common_name,role,certificate_pem,serial_number,not_before,not_after)
+                VALUES (?,?,?,?,?,?,?)""",
+                (parent["id"], "Existing Issuer", "issuing", signed[0], signed[1], signed[2], signed[3])).lastrowid
+            db.commit()
+        replacement_csr, _ = pki.create_ca_request("Existing Issuer", "issuing")
+        self.post("/ca/requests", {
+            "role": "issuing", "rollover_of": str(old_id), "csr_pem": replacement_csr,
+            "validity_days": "180",
+        })
+        with self.app.app_context():
+            pending = dict(get_db().execute("SELECT * FROM ca_requests ORDER BY id DESC LIMIT 1").fetchone())
+        self.assertEqual(pending["rollover_kind"], "subordinate")
+        self.assertEqual(pending["rollover_of"], old_id)
+        reviewer = self.reviewer_client(self.add_second_admin())
+        token = self.form_token(reviewer.get("/", base_url=self.base_url))
+        response = reviewer.post(f"/ca/requests/{pending['id']}/approve", base_url=self.base_url,
+                                 data={"csrf_token": token}, follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
+        with self.app.app_context():
+            rows = get_db().execute("SELECT * FROM issued_authorities ORDER BY id").fetchall()
+            old = rows[0]
+            replacement = rows[1]
+            old_certificate = x509.load_pem_x509_certificate(old["certificate_pem"].encode())
+            new_certificate = x509.load_pem_x509_certificate(replacement["certificate_pem"].encode())
+            self.assertEqual(replacement["rollover_of"], old_id)
+            self.assertEqual(replacement["rollover_kind"], "subordinate")
+            self.assertIsNone(old["revoked_at"])
+            self.assertEqual(old_certificate.subject, new_certificate.subject)
+            self.assertNotEqual(old_certificate.public_key().public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
+                new_certificate.public_key().public_bytes(
+                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo))
 
     def test_local_parent_identifiers_are_rejected_before_creation(self):
         response = self.post("/authorities", {"name": "Invalid CA", "role": "issuing", "common_name": "Invalid CA", "parent_id": "1"})

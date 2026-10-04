@@ -278,9 +278,10 @@ def _sync_parent(db, config):
 
 
 def _external_backup(db, config):
-    from backup import create_snapshot, encrypt_recipient_archive
+    from backup import create_snapshot, encrypt_recipient_archive, sign_archive
     plaintext = create_snapshot(db)
     encrypted = encrypt_recipient_archive(plaintext, config["backup_public_key"])
+    encrypted, _ = sign_archive(encrypted)
     del plaintext
     name = (f"pkimaster-backup-{config['installation_id']}-"
             + datetime.now(UTC).strftime("%Y%m%dt%H%M%S%fz") + "-"
@@ -472,7 +473,7 @@ def form_configuration(saved):
 
 def _page(status=200):
     from app import current_authority, get_db
-    from backup import recipient_public_key
+    from backup import provenance_fingerprint, recipient_public_key
     config = configuration()
     public = {key: value for key, value in config.items() if key not in SECRET_FIELDS}
     fingerprint = recipient_public_key(config["backup_public_key"])[1] if config["backup_public_key"] else ""
@@ -482,7 +483,8 @@ def _page(status=200):
     return render_template("automation.html", title="Automation", provider=public,
                            credential_stored=bool(config.get("password") or config.get("private_key_pem")),
                            fingerprint=fingerprint, authority=current_authority(),
-                           backup_checksum=checksum, jobs=jobs), status
+                           backup_checksum=checksum, provenance_fingerprint=provenance_fingerprint(),
+                           jobs=jobs), status
 
 
 @automation.route("/settings/automation", methods=["GET", "POST"])
@@ -494,6 +496,10 @@ def settings():
     from publication import publication_lock
     if request.method == "GET":
         return _page()
+    from approvals import approval_gate
+    approval_response = approval_gate()
+    if approval_response is not None:
+        return approval_response
     db = get_db()
     try:
         with publication_lock() as acquired:
@@ -518,6 +524,10 @@ def settings():
 @automation.post("/settings/automation/run")
 @require_roles("admin")
 def run_now():
+    from approvals import approval_gate
+    approval_response = approval_gate()
+    if approval_response is not None:
+        return approval_response
     from app import get_db
     from mfa import MfaReauthenticationError, verify_reauthentication
     db = get_db()

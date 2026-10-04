@@ -52,6 +52,7 @@
         {{ nav_item('index', 'Certificate inventory', 'certificate') }}
         {% if can_manage('admin') and has_endpoint is defined and has_endpoint('certificate_profiles.manage') %}{{ nav_item('certificate_profiles.manage', 'Certificate templates', 'grid', 'certificate_profiles.') }}{% endif %}
         {% if can_manage('admin') and has_endpoint is defined and has_endpoint('acme_admin.settings') %}{{ nav_item('acme_admin.settings', 'ACME enrollment', 'automation', 'acme_admin.') }}{% endif %}
+        {% if can_manage('admin') and has_endpoint is defined and has_endpoint('scep_est_admin.settings') %}{{ nav_item('scep_est_admin.settings', 'SCEP / EST enrollment', 'automation', 'scep_est_admin.') }}{% endif %}
         <span class="nav-section-label">Operations</span>
         {% if has_endpoint is defined and has_endpoint('monitoring.dashboard') %}{{ nav_item('monitoring.dashboard', 'Monitoring & alerts', 'pulse', 'monitoring.') }}{% endif %}
         {% if can_manage('admin') %}
@@ -63,6 +64,7 @@
         {% if has_endpoint is defined and has_endpoint('security.overview') %}{{ nav_item('security.overview', 'Security overview', 'shield', 'security.') }}{% endif %}
         {% if can_manage('admin') %}
         <span class="nav-section-label">Administration</span>
+        {% if has_endpoint is defined and has_endpoint('approvals.pending') %}{{ nav_item('approvals.pending', 'Four-eyes approvals', 'users', 'approvals.') }}{% endif %}
         {{ nav_item('enterprise.users', 'Users & access', 'users') }}
         {% if has_endpoint is defined and has_endpoint('identity.settings') %}{{ nav_item('identity.settings', 'Identity providers', 'identity', 'identity.') }}{% endif %}
         {% if has_endpoint is defined and has_endpoint('key_storage.settings') %}{{ nav_item('key_storage.settings', 'Key storage', 'key', 'key_storage.') }}{% endif %}

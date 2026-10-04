@@ -184,6 +184,10 @@ def settings():
     authority = current_authority(db)
     saved = configuration() if authority else _new_authority_configuration(configuration())
     if request.method == "POST":
+        from approvals import approval_gate
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
         try:
             db.execute("BEGIN IMMEDIATE")
             # Re-read under the same lock used by CA creation.

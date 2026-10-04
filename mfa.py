@@ -357,7 +357,11 @@ def challenge():
         return redirect(url_for("mfa.replace"))
     if request.method == "POST":
         return _verify(enrollment=False)
-    return render_template("mfa_challenge.html", title="Verify authenticator")
+    passkey_available = _services()[0].execute(
+        "SELECT 1 FROM passkey_credentials WHERE user_id=? LIMIT 1", (g.user["id"],)
+    ).fetchone() is not None
+    return render_template("mfa_challenge.html", title="Verify authenticator",
+                           passkey_available=passkey_available)
 
 
 @mfa.route("/account/security", methods=["GET", "POST"])

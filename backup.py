@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import ExitStack, closing, contextmanager
 from datetime import UTC, datetime
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -21,9 +22,9 @@ import stat
 import tempfile
 import zipfile
 
-from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
+from cryptography.exceptions import InvalidSignature, InvalidTag, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from flask import Blueprint, Response, abort, current_app, flash, render_template, request, session
@@ -34,6 +35,8 @@ from enterprise import _local_setup_request, _read_secrets, _verify_existing_key
 backup = Blueprint("backup", __name__)
 MAGIC = b"PKIMASTER-BACKUP\x00\x01"
 RECIPIENT_MAGIC = b"PKIMASTER-BACKUP\x00\x02"
+SIGNED_MAGIC = b"PKIMASTER-BACKUP-SIGNED\x00\x01"
+SIGNATURE_DOMAIN = b"PKIMaster backup provenance v1\x00"
 RECIPIENT_LABEL = b"PKIMaster backup recipient v2"
 MAX_BYTES = 128 * 1024 * 1024
 MAX_FILES = 10000
@@ -48,6 +51,99 @@ class BackupError(ValueError):
 
 class RestoreBusy(BackupError):
     """A background worker is still finishing; retry without installing files."""
+
+
+def _provenance_key():
+    path = Path(current_app.config["INSTANCE_PATH"]) / "backup-provenance-ed25519.pem"
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise BackupError("The local backup provenance key must be a regular file.")
+        if os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077:
+            raise BackupError("The local backup provenance key permissions must be restricted to its service account.")
+        data = path.read_bytes()
+        key = serialization.load_pem_private_key(data, password=None)
+        if not isinstance(key, ed25519.Ed25519PrivateKey):
+            raise ValueError("Unexpected key type.")
+        return key
+    except FileNotFoundError:
+        key = ed25519.Ed25519PrivateKey.generate()
+        data = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                 serialization.NoEncryption())
+        _private_directory(path.parent)
+        try:
+            _write_private(path, data)
+        except FileExistsError:
+            try:
+                info = path.lstat()
+                if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
+                        or (os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077)):
+                    raise ValueError("Unsafe key file.")
+                existing = serialization.load_pem_private_key(path.read_bytes(), password=None)
+                if not isinstance(existing, ed25519.Ed25519PrivateKey):
+                    raise ValueError("Unexpected key type.")
+                return existing
+            except (OSError, ValueError, TypeError, UnsupportedAlgorithm) as exc:
+                raise BackupError("The local backup provenance key could not be created securely.") from exc
+        return key
+    except (OSError, ValueError, TypeError, UnsupportedAlgorithm) as exc:
+        raise BackupError("The local backup provenance key could not be read securely.") from exc
+
+
+def sign_archive(encrypted: bytes) -> tuple[bytes, str]:
+    """Sign ciphertext so provenance is verified before any archive decryption."""
+    if not encrypted or len(encrypted) > MAX_BYTES + 1024:
+        raise BackupError("The encrypted backup exceeds the signed archive limit.")
+    key = _provenance_key()
+    public = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    fingerprint = hashlib.sha256(public).hexdigest()
+    signature = key.sign(SIGNATURE_DOMAIN + encrypted)
+    signed = (SIGNED_MAGIC + len(public).to_bytes(2, "big") + public
+              + len(signature).to_bytes(2, "big") + signature + encrypted)
+    if len(signed) > MAX_BYTES + 2048:
+        raise BackupError("The signed backup exceeds the 128 MiB archive limit.")
+    return signed, fingerprint
+
+
+def provenance_fingerprint() -> str:
+    key = _provenance_key()
+    public = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return hashlib.sha256(public).hexdigest()
+
+
+def verify_signed_archive(archive: bytes, expected_fingerprint: str) -> bytes:
+    """Verify a signed archive against a separately retained public-key pin."""
+    maximum = MAX_BYTES + 2048
+    if not isinstance(expected_fingerprint, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_fingerprint):
+        raise BackupError("Enter the trusted 64-character backup signer fingerprint recorded independently.")
+    if not isinstance(archive, bytes) or not archive.startswith(SIGNED_MAGIC) or len(archive) > maximum:
+        raise BackupError("This signed backup is invalid or exceeds 128 MiB.")
+    offset = len(SIGNED_MAGIC)
+    if len(archive) < offset + 2:
+        raise BackupError("The backup provenance envelope is incomplete.")
+    public_length = int.from_bytes(archive[offset:offset + 2], "big")
+    offset += 2
+    if not 32 <= public_length <= 4096 or len(archive) < offset + public_length + 2:
+        raise BackupError("The backup provenance public key is invalid.")
+    public_data = archive[offset:offset + public_length]
+    offset += public_length
+    signature_length = int.from_bytes(archive[offset:offset + 2], "big")
+    offset += 2
+    if signature_length != 64 or len(archive) <= offset + signature_length:
+        raise BackupError("The backup provenance signature is invalid.")
+    signature = archive[offset:offset + signature_length]
+    encrypted = archive[offset + signature_length:]
+    fingerprint = hashlib.sha256(public_data).hexdigest()
+    if not hmac.compare_digest(fingerprint, expected_fingerprint.lower()):
+        raise BackupError("The backup signer does not match the independently trusted fingerprint.")
+    try:
+        public = serialization.load_der_public_key(public_data)
+        if not isinstance(public, ed25519.Ed25519PublicKey):
+            raise ValueError("Unexpected public-key type.")
+        public.verify(signature, SIGNATURE_DOMAIN + encrypted)
+    except (ValueError, TypeError, InvalidSignature, UnsupportedAlgorithm) as exc:
+        raise BackupError("The backup provenance signature is invalid or the archive was modified.") from exc
+    return encrypted
 
 
 def _password(passphrase: str) -> bytes:
@@ -556,7 +652,8 @@ def init_backup(app) -> None:
 @backup.get("/settings/backup")
 @require_roles("admin")
 def settings():
-    return render_template("backup.html", title="Backup and recovery")
+    return render_template("backup.html", title="Backup and recovery",
+                           provenance_fingerprint=provenance_fingerprint())
 
 
 @backup.post("/settings/backup/export")
@@ -565,6 +662,10 @@ def export():
     from app import get_db
     from mfa import MfaReauthenticationError, verify_reauthentication
     from publication import publication_lock
+    from approvals import approval_gate
+    approval_response = approval_gate()
+    if approval_response is not None:
+        return approval_response
     db = get_db()
     try:
         passphrase = request.form.get("passphrase", "")
@@ -580,9 +681,11 @@ def export():
             db.commit()
             plaintext = create_snapshot(db)
             encrypted = encrypt_archive(plaintext, passphrase)
+            encrypted, signer_fingerprint = sign_archive(encrypted)
         filename = "pkimaster-backup-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + ".pkibackup"
         return Response(encrypted, mimetype="application/octet-stream", headers={
-            "Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})
+            "Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store",
+            "X-PKIMaster-Backup-Signer-SHA256": signer_fingerprint})
     except MfaReauthenticationError as exc:
         db.rollback()
         flash(str(exc), "error")
@@ -616,6 +719,10 @@ def restore():
                     raise BackupError("Enter the complete 64-character archive SHA-256 from your independently retained record.")
                 if hashlib.sha256(encrypted).hexdigest() != expected:
                     raise BackupError("The archive does not match the independently recorded SHA-256. Recovery was refused before decryption.")
+            if encrypted.startswith(SIGNED_MAGIC):
+                encrypted = verify_signed_archive(encrypted, request.form.get("expected_signer_sha256", "").strip())
+            elif not expected:
+                raise BackupError("This legacy unsigned archive requires an independently recorded 64-character SHA-256 before recovery.")
             key_file = request.files.get("recovery_key")
             recovery_key = key_file.read(32769) if key_file and key_file.filename else None
             plaintext = decrypt_archive(encrypted, request.form.get("passphrase", ""), recovery_key=recovery_key)

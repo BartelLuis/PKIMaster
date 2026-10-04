@@ -16,6 +16,8 @@
       </div>
       <label class="checkbox-label"><input name="allow_key_export" type="checkbox" {% if settings.allow_key_export %}checked{% endif %}> Allow administrators to download end-entity private keys</label>
       <p class="form-hint">End-entity key downloads are audited. CA private keys can never be downloaded. Operators and auditors cannot download keys.</p>
+      <label class="checkbox-label"><input name="require_dual_approval" type="checkbox" {% if settings.require_dual_approval %}checked{% endif %}> Require independent administrator approval for CA lifecycle actions, certificate issuance/revocation, template policy and these settings</label>
+      <p class="form-hint">When enabled, the requester cannot approve their own action. At least two active administrators with MFA are required. File uploads must be supplied again by the reviewing administrator and must match the request.</p>
     </div>
     <div class="form-section"><h3>HTTPS service</h3><p>Manage the packaged service's listener and web certificate.</p>
       <div class="form-grid">

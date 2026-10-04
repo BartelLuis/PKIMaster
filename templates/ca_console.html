@@ -10,6 +10,7 @@
     <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='cert') }}">CA certificate</a>
     <a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='chain') }}">CA chain</a>
     <a href="{{ url_for('download_crl', authority_id=authority['id']) }}">CRL (DER)</a>
+    {% if authority['role'] == 'root' %}<a href="{{ url_for('download_authority', authority_id=authority['id'], artifact='rollover-csr') }}">Root rollover CSR</a>{% endif %}
     <a href="{{ url_for('download_crl', authority_id=authority['id'], format='pem') }}">CRL (PEM)</a>
     {% endif %}
   </p>
@@ -79,8 +80,19 @@
   <form method="post" action="{{ url_for('sign_subordinate') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Subordinate role<select name="role"><option value="issuing">Issuing</option>{% if authority['role'] == 'root' %}<option value="intermediate">Intermediate</option>{% endif %}</select></label>
+    <label>Rollover existing subordinate CA (optional)
+      <select name="rollover_of"><option value="">New subordinate CA</option>
+        {% for entry in issued_authorities if entry['authority_id'] == authority['id'] and not entry['revoked_at'] %}
+        <option value="{{ entry['id'] }}">{{ entry['common_name'] }} · {{ entry['role'] }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <label>Subordinate CSR (PEM)<textarea name="csr_pem" rows="5" required></textarea></label>
     <label>Requested validity in days<input name="validity_days" type="number" min="1" max="7300" value="365" required></label>
+    {% if authority['role'] == 'root' %}
+    <label class="checkbox-label"><input type="checkbox" name="rollover_kind" value="root_cross_sign"> This is a new Root CA key; issue an overlapping cross-certificate</label>
+    <p class="form-hint">Create the new Root CA on its own server first, download its rollover CSR, then submit that CSR here. The old Root signs only a CA certificate; distribute it with the new self-signed Root certificate.</p>
+    {% endif %}
     <button type="submit" {% if block_reason %}disabled{% endif %}>Submit for independent approval</button>
   </form>
 </section>
@@ -91,6 +103,8 @@
   {% for entry in ca_requests %}
   <details><summary>#{{ entry['id'] }} · {{ entry['common_name'] }} <span class="pill {{ 'status-pending' if entry['status'] == 'pending' else '' }}">{{ entry['status'] }}</span></summary>
     <p>Requested by {{ entry['requester'] }} · {{ entry['role'] }} · {{ entry['validity_days'] }} days</p>
+    {% if entry['rollover_kind'] == 'subordinate' %}<p>Rekey rollover of {{ entry['rollover_of_name'] }}. Keep the previous CA active until the new CA is deployed and verified.</p>
+    {% elif entry['rollover_kind'] == 'root_cross_sign' %}<p>Root rollover cross-certificate. The new Root remains a separate self-signed trust anchor; this certificate provides an overlapping path through the current Root.</p>{% endif %}
     <p>Signing authority: <a href="{{ url_for('authority_detail', authority_id=entry['authority_id']) }}">{{ entry['authority_name'] }}</a>{% if entry['authority_id'] not in active_authority_ids %} <span class="pill status-revoked">Issuer inactive</span>{% endif %}</p>
     <p>CSR SHA-256: <span class="mono">{{ entry['fingerprint'] }}</span></p>
     <label>Recorded CSR<textarea rows="6" readonly>{{ entry['csr_pem'] }}</textarea></label>
@@ -115,7 +129,7 @@
   <div class="table-scroll"><table>
     <thead><tr><th>Common name</th><th>Issuer / role</th><th>Status / expires</th><th>Artifacts</th></tr></thead>
     <tbody>{% for entry in issued_authorities %}<tr>
-      <td>{{ entry['common_name'] }}</td><td><a href="{{ url_for('authority_detail', authority_id=entry['authority_id']) }}">{{ entry['authority_name'] }}</a><br><small>{{ entry['role'] }}</small></td>
+      <td>{{ entry['common_name'] }}{% if entry['rollover_kind'] == 'subordinate' %}<br><small>Rekey rollover of {{ entry['rollover_of_name'] }}</small>{% elif entry['rollover_kind'] == 'root_cross_sign' %}<br><small>Root rollover cross-certificate</small>{% endif %}</td><td><a href="{{ url_for('authority_detail', authority_id=entry['authority_id']) }}">{{ entry['authority_name'] }}</a><br><small>{{ entry['role'] }}</small></td>
       <td>{% if entry['revoked_at'] %}<span class="pill status-revoked">Revoked</span>{% elif entry['authority_id'] not in active_authority_ids %}<span class="pill status-revoked">Issuer inactive</span>{% else %}<span class="pill status-active">Issued</span>{% endif %}<br><small>{{ entry['not_after'][:10] }}</small></td>
       <td class="actions">
         <a href="{{ url_for('download_subordinate', subordinate_id=entry['id'], artifact='cert') }}">Certificate</a>

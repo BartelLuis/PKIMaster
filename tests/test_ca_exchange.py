@@ -87,7 +87,11 @@ class CAExchangeTests(unittest.TestCase):
         usage = request.extensions.get_extension_for_class(x509.KeyUsage)
         self.assertTrue(usage.critical)
         self.assertTrue(usage.value.key_cert_sign and usage.value.crl_sign)
-        for role in ("root", "unknown"):
+        root_csr, _ = pki.create_ca_request("Rollover Root", "root")
+        root_request = x509.load_pem_x509_csr(root_csr.encode())
+        self.assertTrue(root_request.is_signature_valid)
+        self.assertEqual(root_request.subject, pki.build_subject("Rollover Root"))
+        for role in ("unknown",):
             with self.subTest(role=role), self.assertRaises(ValueError):
                 pki.create_ca_request("Invalid", role)
 

@@ -40,6 +40,8 @@ def main() -> None:
             "Package must declare the Segno dependency for local MFA QR generation.")
     require("python3-dnspython (>= 2.7)" in metadata.get("Depends", ""),
             "Package must declare the DNS validation dependency.")
+    require("python3-fido2 (>= 1.2.0)" in metadata.get("Depends", ""),
+            "Package must declare the WebAuthn dependency.")
 
     archive_bytes = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
     with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as archive:
@@ -55,8 +57,11 @@ def main() -> None:
         "usr/lib/pkimaster/monitoring.py", "usr/lib/pkimaster/monitoring_transports.py", "usr/lib/pkimaster/monitoring_worker.py",
         "usr/lib/pkimaster/certificate_profiles.py", "usr/lib/pkimaster/inventory.py", "usr/lib/pkimaster/tls_monitoring.py",
         "usr/lib/pkimaster/automation.py", "usr/lib/pkimaster/automation_worker.py", "usr/lib/pkimaster/acme_service.py",
+        "usr/lib/pkimaster/approvals.py", "usr/lib/pkimaster/passkeys.py", "usr/lib/pkimaster/scep_est.py",
         "usr/lib/pkimaster/templates/certificate_templates.html", "usr/lib/pkimaster/templates/automation.html",
         "usr/lib/pkimaster/templates/acme_settings.html", "usr/lib/pkimaster/static/js/automation.js",
+        "usr/lib/pkimaster/templates/approvals.html", "usr/lib/pkimaster/templates/scep_est_settings.html",
+        "usr/lib/pkimaster/templates/passkeys.html", "usr/lib/pkimaster/static/js/passkeys.js",
         "usr/lib/pkimaster/static/css/console.css",
         "usr/lib/pkimaster/static/js/console.js",
         "usr/lib/pkimaster/templates/base.html", "usr/lib/pkimaster/templates/index.html",
