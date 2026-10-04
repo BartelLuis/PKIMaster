@@ -111,7 +111,7 @@ class RecipientEnvelopeTests(unittest.TestCase):
         self.assertEqual(decrypt_archive(value, "external key passphrase", recovery_key=private), b"state")
         with self.assertRaises(BackupError):
             decrypt_archive(value, "wrong", recovery_key=private)
-        with patch("backup._derive_key", side_effect=lambda password, salt: hashlib.sha256(password.encode() + salt).digest()):
+        with patch("backup._derive_key", return_value=b"\0" * 32):
             manual = encrypt_archive(b"manual snapshot", "original long manual passphrase")
             self.assertEqual(decrypt_archive(manual, "original long manual passphrase"), b"manual snapshot")
 
