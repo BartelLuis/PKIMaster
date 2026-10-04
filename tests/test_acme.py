@@ -95,6 +95,10 @@ class AcmeTests(unittest.TestCase):
         self.assertIsNotNone(fields, page.data)
         return {"id": fields[1].decode(), "secret": fields[2].decode()}
 
+    def test_contact_length_is_checked_before_validation(self):
+        with self.assertRaises(acme.AcmeError):
+            acme._contacts({"contact": ["mailto:" + "mailto:" * 40]})
+
     def new_order(self, names=("app.example.com",), protocol=None):
         response = (protocol or self.protocol).post("/acme/new-order", {"identifiers": [{"type": "dns", "value": name} for name in names]})
         self.assertEqual(response.status_code, 201, response.data)
