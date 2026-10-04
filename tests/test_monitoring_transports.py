@@ -140,6 +140,9 @@ class MonitoringTransportTests(unittest.TestCase):
         for value in ("ops@example.net\r\nBcc:other@example.net", "Ops <ops@example.net>", "ops", "", "ops@example.net,other@example.net"):
             with self.subTest(value=value), self.assertRaises(transport.MonitoringError):
                 transport.validate_email(value)
+        self.assertEqual(transport.validate_email("ops+alerts@mail.example"), "ops+alerts@mail.example")
+        with self.assertRaises(transport.MonitoringError):
+            transport.validate_email("ops@" + "a" * 240 + "!")
 
 
 if __name__ == "__main__":

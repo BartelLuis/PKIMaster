@@ -139,7 +139,8 @@ def http_request(url, *, payload=None, headers=None, limit=MAX_DOWNLOAD):
 
 
 def validate_email(value):
-    if len(value) > 254 or not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", value):
+    if len(value) > 254 or not re.fullmatch(
+            r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*", value):
         raise MonitoringError("Use plain email addresses without display names or line breaks.")
     return value
 
