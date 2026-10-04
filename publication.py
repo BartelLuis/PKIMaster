@@ -277,12 +277,27 @@ def _validate_retired_targets(values, *, destination=False):
 def _form_configuration(saved):
     values = dict(saved)
     values["enabled"] = request.form.get("enabled") == "on"
+    raw_authority_id = request.form.get("authority_id", str(saved.get("authority_id") or "")).strip()
+    values["authority_id"] = None
+    if raw_authority_id:
+        if not raw_authority_id.isascii() or not raw_authority_id.isdigit() or len(raw_authority_id) > 18:
+            raise ValueError("Select a valid local CA for publication.")
+        values["authority_id"] = int(raw_authority_id)
+        from app import get_authority
+        authority = get_authority(values["authority_id"])
+        if authority is None or authority["revoked_at"]:
+            raise ValueError("Publication must be assigned to a non-revoked local CA.")
+    changed_authority = values["authority_id"] != saved.get("authority_id")
     for field in ("crl_url", "aia_url"):
         values[field] = request.form.get(field, "").strip()
         if values[field]:
             validate_publication_url(values[field], label="CRL" if field == "crl_url" else "AIA")
             if "?" in values[field]:
                 raise ValueError("Public artifact URLs must not contain query parameters.")
+    if changed_authority and any(
+        values.get(field) and values[field] == saved.get(field) for field in ("crl_url", "aia_url")
+    ):
+        raise ValueError("Use distinct CRL and AIA URLs when changing the CA assigned to publication.")
     _validate_retired_targets(values)
     # Disabling must remain possible even if credentials are no longer usable.
     if not values["enabled"]:
@@ -295,7 +310,10 @@ def _form_configuration(saved):
     if method not in {"password", "key"}:
         raise ValueError("Select password or SSH key authentication.")
     # Never carry credentials to a different server/account without an explicit replacement.
-    changed_target = any(str(values.get(field, "")) != str(saved.get(field, "")) for field in ("host", "port", "username", "host_key_sha256"))
+    changed_target = changed_authority or any(
+        str(values.get(field, "")) != str(saved.get(field, ""))
+        for field in ("host", "port", "username", "host_key_sha256")
+    )
     for field in SECRET_FIELDS:
         values[field] = request.form.get(field) or (saved.get(field, "") if not changed_target else "")
     if request.form.get("private_key_pem"):
@@ -308,6 +326,10 @@ def _form_configuration(saved):
         values["password"] = ""
     values = {**values, **validate_transport(values)}
     _validate_retired_targets(values, destination=True)
+    if (changed_authority and saved.get("authority_id") is not None
+            and values.get("enabled")
+            and all(str(values.get(field, "")) == str(saved.get(field, "")) for field in ("host", "port", "directory"))):
+        raise ValueError("Use a separate SFTP directory or server for each CA.")
     return values
 
 
@@ -346,9 +368,12 @@ def settings():
     state["next_attempt"] = datetime.fromtimestamp(state["next_attempt_at"], UTC).isoformat() if state["next_attempt_at"] else None
     authority = _configured_authority(db, config)
     cached = db.execute("SELECT number,next_update FROM crls WHERE authority_id=?", (authority["id"],)).fetchone() if authority else None
+    authorities = db.execute(
+        "SELECT id,name,role,state FROM authorities WHERE revoked_at IS NULL ORDER BY id"
+    ).fetchall()
     return render_template("publication.html", title="CRL & AIA publication", provider={key: value for key, value in config.items() if key not in SECRET_FIELDS},
                            has_password=bool(config.get("password")), has_key=bool(config.get("private_key_pem")),
-                           state=state, authority=authority, cached=cached), status
+                           state=state, authority=authority, cached=cached, authorities=authorities), status
 
 
 @publication.post("/publication/publish")

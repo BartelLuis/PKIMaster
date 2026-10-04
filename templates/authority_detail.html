@@ -7,6 +7,28 @@
   {% if authority['revoked_at'] %}<p>Revoked {{ authority['revoked_at'] }}: {{ authority['revocation_reason']|replace('_', ' ') }}</p><p>This CA is archived. Its certificates, revocation data and audit history are retained. <a href="{{ url_for('index') }}">Manage or initialize the current CA</a>.</p>{% endif %}
   {% if block_reason %}<p class="notice notice-warning">{{ block_reason }}</p>{% endif %}
   <p>This local CA's private key is not available for download.</p>
+  {% if can_manage('admin') and not authority['revoked_at'] and authority['state'] == 'pending' %}
+  <h3>Activate this CA</h3>
+  <p>Have the external parent sign this CA's CSR. Verify the root fingerprint through a trusted channel before importing the certificate and chain.</p>
+  <form method="post" action="{{ url_for('activate_authority') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
+    <label>Signed local CA certificate (PEM)<textarea name="certificate_pem" rows="5" required></textarea></label>
+    <label>Parent certificates (PEM, immediate issuer first, root last)<textarea name="chain_pem" rows="6" required></textarea></label>
+    <label>Trusted root SHA-256 fingerprint<input name="trusted_root_sha256" required minlength="64" maxlength="95" placeholder="Obtain through your trusted verification channel"></label>
+    <button type="submit">Validate and import CA certificate</button>
+  </form>
+  {% elif can_manage('admin') and not authority['revoked_at'] and authority['state'] == 'active' and authority['role'] != 'root' %}
+  <details {% if block_reason %}open{% endif %}><summary>Parent revocation status</summary>
+    <p>Import a current, signed full CRL from every parent server, immediate issuer first and root last. Missing, expired, or revoked parent status blocks issuance.</p>
+    <form method="post" action="{{ url_for('update_parent_crls') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
+      <label>Parent CRLs (PEM)<textarea name="parent_crls_pem" rows="6" required></textarea></label>
+      <button type="submit">Validate and import parent CRLs</button>
+    </form>
+  </details>
+  {% endif %}
   <div class="table-scroll"><table class="detail-table">
     <tbody>
       <tr><th>Subject</th><td class="mono">{{ authority['common_name'] }}</td></tr>

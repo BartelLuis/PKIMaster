@@ -233,6 +233,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     def index() -> str:
         authorities = list_authorities()
         authority = current_authority()
+        local_authorities = [item for item in authorities if not item["revoked_at"]]
         active_authority_ids = {item["id"] for item in authorities if authority_is_active(item)}
         issuing = [item for item in authorities if item["role"] == "issuing" and item["id"] in active_authority_ids]
         from inventory import search_filters, inventory_rows
@@ -249,6 +250,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             FROM certificates""", (utc_now().isoformat(), utc_now().isoformat(), (utc_now() + timedelta(days=30)).isoformat())).fetchone()
         return render_template("index.html", title="Certificate inventory", authorities=authorities,
                                authority=authority, archived_authorities=[item for item in authorities if item["revoked_at"]],
+                               local_authorities=local_authorities, multi_ca_enabled=get_setting("multi_ca_enabled", False),
                                block_reason=authority_block_reason(authority) if authority else "",
                                ca_requests=db.execute("""SELECT r.*, u.username AS requester, a.name AS authority_name,
                                    old.common_name AS rollover_of_name FROM ca_requests r
@@ -301,9 +303,11 @@ def create_app(test_config: dict | None = None) -> Flask:
                 if not acquired:
                     raise ValueError("Only one CA can be initialized at a time. CA initialization or publication is in progress; try again shortly.")
                 db.execute("BEGIN IMMEDIATE")
+                existing_local = db.execute("SELECT COUNT(*) FROM authorities WHERE revoked_at IS NULL").fetchone()[0]
+                multi_ca_enabled = get_setting("multi_ca_enabled", False)
                 replacement = db.execute("SELECT 1 FROM authorities LIMIT 1").fetchone() is not None
-                if current_authority(db):
-                    raise ValueError("Only one CA may be current on this server. Revoke it before initializing a replacement.")
+                if existing_local and not multi_ca_enabled:
+                    raise ValueError("Only one CA may be current on this server. Enable MultiCA in Settings before adding another CA.")
                 if db.execute("SELECT 1 FROM authorities WHERE name=?", (name,)).fetchone():
                     raise ValueError("A CA with this name already exists in the archive. Delete the revoked CA to reuse its name, or choose another name.")
                 if parent_id:
@@ -319,16 +323,25 @@ def create_app(test_config: dict | None = None) -> Flask:
                     (name, role, common_name, certificate_pem, private_key_pem, serial_number, not_before, not_after, csr_pem, state, key_backend, key_reference)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (name, role, common_name, pem, encrypt_private_key(key) if key else "", serial, start, end, csr, state, backend, reference))
+                authority_id = result.lastrowid
+                if existing_local == 0 and not get_setting("default_authority_id", ""):
+                    db.execute("INSERT INTO settings(key,value) VALUES ('default_authority_id',?) ON CONFLICT(key) DO NOTHING",
+                               (str(authority_id),))
+                from key_storage import persist_authority_key_configuration
+                persist_authority_key_configuration(db, authority_id)
                 audit_event("authority.created", "authority", str(result.lastrowid), f"{role}: {name}")
-                reset_for_new_authority(db, result.lastrowid)
+                if existing_local == 0:
+                    reset_for_new_authority(db, result.lastrowid)
                 queue_publication(db)
                 db.commit()
             flash(f"Created {role} CA '{name}'." if role == "root" else "CA key and CSR created. Download the CSR for signing on the parent CA server.", "success")
-            if replacement:
+            if replacement and not multi_ca_enabled:
                 flash("Previous CA records remain in the archive. Configure separate CRL/AIA URLs and an SFTP directory for the new CA before enabling publication.", "warning")
+            elif existing_local:
+                flash("This CA has an independent identity and history. Select it explicitly for certificate issuance; configure its public artifact delivery before relying on external CRL/AIA URLs.", "warning")
         except sqlite3.IntegrityError:
             db.rollback()
-            flash("Only one CA may be current on this server, and each CA needs a unique name.", "error")
+            flash("MultiCA must be enabled before multiple local CAs can be created, and each CA needs a unique name.", "error")
         except ValueError as error:
             db.rollback()
             flash(str(error), "error")
@@ -342,7 +355,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = current_authority(db)
+            authority = selected_form_authority(db)
             if authority is None or authority["state"] != "pending" or authority["revoked_at"]:
                 raise ValueError("Only a pending local CA can be activated.")
             pem = request.form.get("certificate_pem", "").strip()
@@ -373,7 +386,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = current_authority(db)
+            authority = selected_form_authority(db)
             if authority is None or authority["state"] != "active" or authority["role"] == "root":
                 raise ValueError("Parent CRLs require an activated subordinate CA.")
             pem = request.form.get("parent_crls_pem", "")
@@ -419,7 +432,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         db = get_db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            authority = current_authority(db)
+            authority = selected_form_authority(db)
             rollover_kind = request.form.get("rollover_kind", "")
             rollover_of = request.form.get("rollover_of", "").strip()
             if rollover_kind not in {"", "root_cross_sign"}:
@@ -650,6 +663,8 @@ def create_app(test_config: dict | None = None) -> Flask:
                 for table in ("ca_requests", "certificates", "issued_authorities", "crls"):
                     db.execute(f"DELETE FROM {table} WHERE authority_id=?", (authority_id,))
                 db.execute("DELETE FROM authorities WHERE id=?", (authority_id,))
+                if get_setting("default_authority_id", "") == str(authority_id):
+                    db.execute("UPDATE settings SET value='' WHERE key='default_authority_id'")
                 audit_event("authority.deleted", "authority", str(authority_id), json.dumps({
                     "name": authority["name"], "serial_number": authority["serial_number"],
                     "key_backend": authority["key_backend"], "deleted_records": counts,
@@ -790,11 +805,17 @@ def init_db(app: Flask) -> None:
         if existing:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(authorities)")}
             current_filter = " WHERE revoked_at IS NULL" if "revoked_at" in columns else ""
-            if connection.execute("SELECT COUNT(*) FROM authorities" + current_filter).fetchone()[0] > 1:
+            settings_table = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'").fetchone()
+            multica_setting = connection.execute(
+                "SELECT value FROM settings WHERE key='multi_ca_enabled'"
+            ).fetchone() if settings_table else None
+            if (connection.execute("SELECT COUNT(*) FROM authorities" + current_filter).fetchone()[0] > 1
+                    and (multica_setting is None or multica_setting[0] != "true")):
                 raise RuntimeError("This installation contains multiple local CAs that have not been revoked. Startup is blocked: only one current CA is permitted per server. Preserve the database and runtime secrets; see docs/BSI-READINESS.md for migration planning. No CA data has been deleted.")
         connection.executescript("""
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
+            CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS authorities (
               id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
               role TEXT NOT NULL CHECK(role IN ('root', 'intermediate', 'issuing')),
@@ -866,7 +887,9 @@ def init_db(app: Flask) -> None:
             BEGIN SELECT RAISE(ABORT, 'The CA key provider and identity are immutable'); END;
             DROP TRIGGER IF EXISTS single_local_ca;
             CREATE TRIGGER single_local_ca BEFORE INSERT ON authorities
-            WHEN NEW.revoked_at IS NULL AND EXISTS (SELECT 1 FROM authorities WHERE revoked_at IS NULL)
+            WHEN NEW.revoked_at IS NULL
+              AND COALESCE((SELECT value FROM settings WHERE key='multi_ca_enabled'), 'false') != 'true'
+              AND EXISTS (SELECT 1 FROM authorities WHERE revoked_at IS NULL)
             BEGIN SELECT RAISE(ABORT, 'Only one CA may be current per server'); END;
             CREATE TRIGGER IF NOT EXISTS preserve_ca_revocation BEFORE UPDATE OF revoked_at ON authorities
             WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
@@ -894,11 +917,38 @@ def init_db(app: Flask) -> None:
         connection.close()
 
 
-def current_authority(db: sqlite3.Connection | None = None) -> sqlite3.Row | None:
-    """The one non-revoked CA, including a CA awaiting certificate import."""
-    return (db if db is not None else get_db()).execute(
-        "SELECT * FROM authorities WHERE revoked_at IS NULL ORDER BY id DESC LIMIT 1"
+def current_authority(db: sqlite3.Connection | None = None, authority_id: int | None = None) -> sqlite3.Row | None:
+    """Resolve an explicit CA, the configured default, or the sole local CA."""
+    connection = db if db is not None else get_db()
+    if authority_id is not None:
+        return connection.execute(
+            "SELECT * FROM authorities WHERE id=? AND revoked_at IS NULL", (authority_id,)
+        ).fetchone()
+    default = connection.execute("SELECT value FROM settings WHERE key='default_authority_id'").fetchone()
+    if default and default["value"].isascii() and default["value"].isdigit():
+        authority = connection.execute(
+            "SELECT * FROM authorities WHERE id=? AND revoked_at IS NULL", (int(default["value"]),)
+        ).fetchone()
+        if authority is not None:
+            return authority
+    multi_ca = connection.execute(
+        "SELECT value FROM settings WHERE key='multi_ca_enabled'"
     ).fetchone()
+    if multi_ca and multi_ca["value"] == "true":
+        return None
+    authorities = connection.execute(
+        "SELECT * FROM authorities WHERE revoked_at IS NULL ORDER BY id DESC LIMIT 2"
+    ).fetchall()
+    return authorities[0] if len(authorities) == 1 else None
+
+
+def selected_form_authority(db: sqlite3.Connection) -> sqlite3.Row | None:
+    raw_id = request.form.get("authority_id", "").strip()
+    if not raw_id:
+        return current_authority(db)
+    if not raw_id.isascii() or not raw_id.isdigit() or len(raw_id) > 18:
+        return None
+    return current_authority(db, int(raw_id))
 
 
 def authority_deletion_counts(db: sqlite3.Connection, authority_id: int) -> dict[str, int]:

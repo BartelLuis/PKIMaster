@@ -1,3 +1,14 @@
+pkimaster (0.5.0-1) trixie; urgency=medium
+
+  * Publish the stable 0.5.0 release with the tested release-candidate features.
+  * Add opt-in MultiCA management for independent local certificate authorities.
+  * Bind signing credentials, issuance and renewal to the selected authority.
+  * Preserve ACME order issuers and select authorities for CRL automation.
+  * Assign automatic SFTP publication to one authority with isolated targets.
+  * Document MultiCA activation, default selection and deployment boundaries.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sun, 04 Oct 2026 23:17:03 +0200
+
 pkimaster (0.5.0~rc1-1) trixie; urgency=medium
 
   * Add optional independent four-eyes approvals for high-impact administration.

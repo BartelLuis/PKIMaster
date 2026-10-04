@@ -8,14 +8,14 @@
 
 **Private PKI for Debian, managed entirely through your browser.**
 
-PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. Each dedicated server runs one current Root, Intermediate, or Issuing CA and retains revoked CAs as history. Separate CA servers exchange CSRs, signed certificates, public chains and CRLs; their private keys remain separate. Choose local, LDAP or OpenID Connect authentication with mandatory MFA, and encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault for CA signing. Independent approval of subordinate CA requests, explicit roles and authenticated audit chains protect administration.
+PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. By default each dedicated server runs one current Root, Intermediate, or Issuing CA and retains revoked CAs as history. Optional MultiCA mode permits multiple independent local CAs; parent and child trust tiers still run on separate servers. Choose local, LDAP or OpenID Connect authentication with mandatory MFA, and encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault for CA signing. Independent approval of subordinate CA requests, explicit roles and authenticated audit chains protect administration.
 
 **BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
 
-## Pre-release: 0.5.0-rc1
+## New in 0.5.0
 
-The 0.5.0 release candidate is a pre-release for testing, not the final 0.5.0
-release. It adds:
+Version 0.5.0 is the stable release of the tested release-candidate features,
+with optional MultiCA management:
 
 | Area | What you can do |
 | --- | --- |
@@ -24,8 +24,9 @@ release. It adds:
 | Backup provenance | Sign manual and scheduled encrypted backups; verify the Ed25519 signer against a fingerprint retained independently before recovery. |
 | Passkeys | Optionally use WebAuthn passkeys as a phishing-resistant second factor, while retaining the required TOTP/recovery fallback. |
 | SCEP and EST | Optionally enable credential-scoped device enrollment under certificate-template and domain constraints. Both protocols are disabled by default. |
+| MultiCA | Optionally manage multiple independent local CAs, select an Issuing CA for issuance and renewal, and configure a default CA for integrations. |
 
-Four-eyes approval and SCEP/EST are opt-in. Read the operational limits and
+Four-eyes approval, SCEP/EST and MultiCA are opt-in. Read the operational limits and
 rollout procedures in [approvals](docs/APPROVALS.md), [CA rollover](docs/CA-ROLLOVER.md),
 [backup and recovery](docs/BACKUP.md), [passkeys](docs/PASSKEYS.md) and
 [SCEP/EST](docs/SCEP-EST.md) before enabling them. This project targets a BSI
@@ -46,7 +47,7 @@ operational baseline and does not claim certification.
 
 Automation and ACME are disabled until configured. See [automation and recovery-key setup](docs/AUTOMATION.md), [ACME client setup](docs/ACME.md) and [monitoring](docs/MONITORING.md).
 
-## One current CA per server
+## Optional MultiCA mode
 
 ```mermaid
 flowchart LR
@@ -54,13 +55,13 @@ flowchart LR
   Issuing -->|Issue certificates| Services["Applications and devices"]
 ```
 
-An optional Intermediate CA runs on another dedicated server. SQLite guards reject a second current local CA, including one awaiting activation, and startup refuses databases containing multiple non-revoked local CAs without deleting any data. Parent servers retain only the public certificates they issue for remote CAs. Standalone CA private-key downloads are forbidden; encrypted disaster-recovery backups include locally stored CA material.
+MultiCA is disabled by default. An administrator enables it in **Settings**, then can create and manage multiple independent local CAs. Certificates, CRLs, audit history and signing keys remain bound to the selected CA. Certificate issuance and renewal let an administrator choose an active Issuing CA. Select a default local CA in **Settings** for integrations or other operations that do not carry an explicit CA ID; if no valid default is configured, those operations fail closed. MultiCA does not host a local Root → Intermediate → Issuing hierarchy: parent CAs still run on separate servers and exchange CSRs, signed certificates, public chains and CRLs. Parent servers retain only the public certificates they issue for remote CAs. Standalone CA private-key downloads are forbidden; encrypted disaster-recovery backups include locally stored CA material.
 
-After revoking the current CA, return to **Certificate inventory** to initialize a new Root, Intermediate or Issuing CA on the same host. The **Revoked CA archive** retains the previous CA, its issued certificates, signing requests and public download URLs. A replacement gets its own identity and key; existing certificates stay associated with their original issuer. Revocation remains permanent. Continue distributing the old CA's CRL and arrange parent revocation or removal of root trust as appropriate.
+Without MultiCA, revoke the current CA before initializing a replacement on the same host. With MultiCA, new CAs can be initialized alongside existing ones. The **Revoked CA archive** retains revoked authorities, their issued certificates, signing requests and public download URLs. Each new CA gets its own identity and key; existing certificates stay associated with their original issuer. Revocation remains permanent. Continue distributing each CA's CRL and arrange parent revocation or removal of root trust as appropriate.
 
 To remove a revoked CA permanently, select **Delete CA** in the **Revoked CA archive** and type its exact display name to confirm. Only administrators can delete a revoked CA. Deletion removes the CA and its associated issued certificates, CA signing requests, CRLs, locally stored keys and archived provider credentials. Its local certificate and CRL download URLs stop working, and its display name becomes available for reuse. Audit records remain. External HSM/Azure keys, previously uploaded publication files and backup copies are not deleted automatically. An undeleted archived CA continues to reserve its display name.
 
-Configure separate CRL/AIA publication URLs and a separate SFTP directory for the replacement before enabling uploads. Preserve the previous CA's public files and URLs for existing certificates.
+Configure separate CRL/AIA publication URLs and SFTP directories for each CA before enabling uploads. The current automatic SFTP publisher is assigned to one CA at a time; other CAs remain available at their CA-specific PKIMaster artifact URLs. Preserve revoked CAs' public files and URLs for existing certificates.
 
 Use the [browser workflow and migration instructions](docs/BSI-READINESS.md#browser-workflow) to establish the hierarchy. At least two administrator accounts on each signing parent are required: one submits the child CSR and another approves it. On the child, import the signed certificate, public parent chain and current signed parent CRLs; verify the root fingerprint through a trusted channel. Missing or stale parent CRLs block signing.
 
@@ -120,14 +121,14 @@ The source limits trust to this repository's key using `Signed-By` and stays on 
 
 ```sh
 apt list --all-versions pkimaster
-apt download pkimaster=0.4.0-1
+apt download pkimaster=0.5.0-1
 ```
 
-Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.4.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.4.0-1/pkimaster_0.4.0-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
+Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.5.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.5.0/pkimaster_0.5.0-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.4.0-1_all.deb
+sudo apt install ./pkimaster_0.5.0-1_all.deb
 ```
 
 To build from source, run the following from a checkout on Debian 13 (the build runs the application tests):

@@ -8,7 +8,9 @@
   {% if blocked %}<p role="alert">{{ blocked }}</p>{% else %}
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="authority_id" value="{{ values.authority_id }}">
+    {% if multi_ca_enabled %}
+    <label>Issuing CA<select name="authority_id" required>{% for issuer in issuing_authorities %}<option value="{{ issuer['id'] }}" {% if values.authority_id == issuer['id']|string %}selected{% endif %}>{{ issuer['name'] }}</option>{% endfor %}</select></label>
+    {% else %}<input type="hidden" name="authority_id" value="{{ values.authority_id }}">{% endif %}
     <label>Common name<input name="common_name" value="{{ values.common_name }}" required maxlength="255"></label>
     <label>Subject alternative names<textarea name="subject_alt_names" rows="3">{{ values.subject_alt_names }}</textarea></label>
     <label>Certificate template<select name="template_id" data-certificate-template required>{% for item in issuance_templates %}<option value="{{ item.id }}" data-default-days="{{ item.default_validity_days }}" data-max-days="{{ item.max_validity_days }}" data-profile="{{ item.profile }}" {% if item.id|string == values.template_id or (not values.template_id and item.builtin == values.profile) %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>

@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from werkzeug.security import generate_password_hash
 
-from app import authority_is_active, create_app, get_db
+from app import authority_is_active, create_app, current_authority, get_db
 from approvals import _payload
 from enterprise import get_setting
 from key_storage import authority_signing_key
@@ -150,6 +150,8 @@ class PKIMasterTestCase(unittest.TestCase):
         return client
 
     def test_dashboard_and_public_health_endpoint(self):
+        with self.app.app_context():
+            self.assertFalse(get_setting("multi_ca_enabled"))
         response = self.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Local CA", response.data)
@@ -173,6 +175,73 @@ class PKIMasterTestCase(unittest.TestCase):
         self.assertEqual(self.count("authorities"), 1)
         self.assertEqual(self.local_ca()["private_key_pem"], first["private_key_pem"])
         self.assertEqual(len(x509.load_pem_x509_certificates(self.get("/authorities/1/chain").data)), 1)
+
+    def test_multica_is_opt_in_and_issues_with_the_selected_local_ca(self):
+        first = self.activate_issuer()
+        settings = {
+            "organization": "Test PKI", "public_base_url": "https://pki.example",
+            "max_leaf_days": "397", "crl_days": "7", "session_minutes": "30",
+            "listen_address": "127.0.0.1", "https_port": "8443",
+            "multi_ca_enabled": "on", "default_authority_id": str(first["id"]),
+        }
+        self.post("/settings", settings)
+        with self.app.app_context():
+            self.assertTrue(get_setting("multi_ca_enabled"))
+
+        self.post("/authorities", {
+            "name": "Second Issuing CA", "role": "issuing",
+            "common_name": "Second Issuing CA", "validity_days": "365",
+        })
+        with self.app.app_context():
+            second = dict(get_db().execute(
+                "SELECT * FROM authorities WHERE name='Second Issuing CA'"
+            ).fetchone())
+        signed = pki.sign_ca_request(second["csr_pem"], "issuing", 30, "root",
+                                     self.external_root[0], self.external_root[1])
+        fingerprint = x509.load_pem_x509_certificate(
+            self.external_root[0].encode()
+        ).fingerprint(hashes.SHA256()).hex()
+        self.post("/ca/activate", {
+            "authority_id": str(second["id"]), "certificate_pem": signed[0],
+            "chain_pem": self.external_root[0], "trusted_root_sha256": fingerprint,
+        })
+        crl = pki.build_crl(self.external_root[0], self.external_root[1], [], 2, 7)
+        self.post("/ca/parent-crls", {
+            "authority_id": str(second["id"]),
+            "parent_crls_pem": x509.load_der_x509_crl(crl).public_bytes(
+                serialization.Encoding.PEM
+            ).decode(),
+        })
+
+        response = self.issue_leaf(authority_id=second["id"])
+        self.assertEqual(response.status_code, 200)
+        with self.app.app_context():
+            issued = get_db().execute("SELECT authority_id FROM certificates").fetchone()
+            self.assertEqual(issued["authority_id"], second["id"])
+            default_id = get_db().execute(
+                "SELECT value FROM settings WHERE key='default_authority_id'"
+            ).fetchone()["value"]
+            self.assertEqual(default_id, str(first["id"]))
+        self.assertIn(b"Second Issuing CA", self.get("/").data)
+
+        restarted = create_app(self.config)
+        with restarted.app_context():
+            self.assertTrue(get_setting("multi_ca_enabled"))
+            self.assertEqual(get_db().execute(
+                "SELECT COUNT(*) FROM authorities WHERE revoked_at IS NULL"
+            ).fetchone()[0], 2)
+
+        settings["default_authority_id"] = ""
+        self.post("/settings", settings)
+        with self.app.app_context():
+            self.assertIsNone(current_authority())
+
+        settings.pop("multi_ca_enabled")
+        response = self.post("/settings", settings)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"MultiCA cannot be disabled", response.data)
+        with self.app.app_context():
+            self.assertTrue(get_setting("multi_ca_enabled"))
 
     def test_four_eyes_approval_is_default_off(self):
         with self.app.app_context():

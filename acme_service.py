@@ -465,8 +465,8 @@ def _domain_allowed(name, domains):
 
 def _issuer(expected_id=None):
     from app import current_authority, authority_block_reason
-    authority = current_authority()
-    if not authority or authority["role"] != "issuing" or expected_id is not None and authority["id"] != expected_id:
+    authority = current_authority(authority_id=expected_id) if expected_id is not None else current_authority()
+    if not authority or authority["role"] != "issuing":
         raise AcmeError("serverInternal", "An active Issuing CA matching this order is required.", 503)
     reason = authority_block_reason(authority)
     if reason:

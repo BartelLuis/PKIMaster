@@ -18,6 +18,17 @@
       <p class="form-hint">End-entity key downloads are audited. CA private keys can never be downloaded. Operators and auditors cannot download keys.</p>
       <label class="checkbox-label"><input name="require_dual_approval" type="checkbox" {% if settings.require_dual_approval %}checked{% endif %}> Require independent administrator approval for CA lifecycle actions, certificate issuance/revocation, template policy and these settings</label>
       <p class="form-hint">When enabled, the requester cannot approve their own action. At least two active administrators with MFA are required. File uploads must be supplied again by the reviewing administrator and must match the request.</p>
+      <label class="checkbox-label"><input name="multi_ca_enabled" type="checkbox" {% if settings.multi_ca_enabled %}checked{% endif %}> Enable MultiCA mode</label>
+      <p class="form-hint">Disabled by default. When enabled, this installation can maintain multiple independent local CAs. It does not host local parent-child CA hierarchies.</p>
+      <label>Default local CA for operations without an explicit CA selection
+        <select name="default_authority_id">
+          <option value="">No default — require explicit selection</option>
+          {% for authority in authorities if authority.state == 'active' %}
+          <option value="{{ authority.id }}" {% if settings.default_authority_id|string == authority.id|string %}selected{% endif %}>{{ authority.name }} — {{ authority.role }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <p class="form-hint">ACME, SCEP/EST and other integrations that do not select a CA per request use this default. Existing certificates remain bound to their original CA.</p>
     </div>
     <div class="form-section"><h3>HTTPS service</h3><p>Manage the packaged service's listener and web certificate.</p>
       <div class="form-grid">

@@ -24,17 +24,17 @@ def configuration():
 
 def _save(values):
     from app import get_db, private_key_cipher
-    _archive_revoked_credentials()
+    _archive_authority_credentials()
     encrypted = private_key_cipher().encrypt(json.dumps(values).encode()).decode()
     get_db().execute("INSERT INTO settings (key,value) VALUES ('key_storage_config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (encrypted,))
 
 
-def _archive_revoked_credentials():
-    """Keep retired providers usable for their existing CRL URLs."""
+def _archive_authority_credentials():
+    """Pin provider credentials to each CA before shared setup changes."""
     from app import get_db, private_key_cipher
     db = get_db()
     saved = configuration()
-    for authority in db.execute("SELECT * FROM authorities WHERE revoked_at IS NOT NULL AND key_backend != 'software'"):
+    for authority in db.execute("SELECT * FROM authorities WHERE key_backend != 'software'"):
         name = f"authority_key_storage:{authority['id']}"
         if db.execute("SELECT 1 FROM settings WHERE key=?", (name,)).fetchone():
             continue
@@ -44,12 +44,14 @@ def _archive_revoked_credentials():
 
 
 def _new_authority_configuration(saved):
-    """An inherited provider binding must create a new key after revocation."""
+    """Never reuse a key already bound to a local authority."""
     from app import get_db
     values = dict(saved)
     fingerprint = values.get("public_key_sha256")
     if fingerprint:
-        for authority in get_db().execute("SELECT key_reference FROM authorities WHERE revoked_at IS NOT NULL AND key_backend=?", (values["backend"],)):
+        for authority in get_db().execute(
+            "SELECT key_reference FROM authorities WHERE key_backend=?", (values["backend"],)
+        ):
             if json.loads(authority["key_reference"]).get("public_key_sha256") == fingerprint:
                 if values["backend"] == "azure" and not values.get("key_name"):
                     values["key_name"] = urlsplit(values["key_id"]).path.split("/")[-2]
@@ -57,6 +59,35 @@ def _new_authority_configuration(saved):
                 values.pop("public_key_sha256", None)
                 break
     return values
+
+
+def persist_authority_key_configuration(db, authority_id):
+    """Store credentials per CA so provisioning another CA cannot retarget its signer."""
+    from app import private_key_cipher
+    authority = db.execute(
+        "SELECT key_backend,key_reference FROM authorities WHERE id=?", (authority_id,)
+    ).fetchone()
+    if authority is None or authority["key_backend"] == "software":
+        return
+    values = {**configuration(), **json.loads(authority["key_reference"] or "{}"),
+              "backend": authority["key_backend"]}
+    encrypted = private_key_cipher().encrypt(json.dumps(values).encode()).decode()
+    db.execute(
+        "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (f"authority_key_storage:{authority_id}", encrypted),
+    )
+
+
+def _authority_configuration(authority):
+    from app import get_db, private_key_cipher
+    row = get_db().execute(
+        "SELECT value FROM settings WHERE key=?", (f"authority_key_storage:{authority['id']}",)
+    ).fetchone()
+    if row:
+        return json.loads(private_key_cipher().decrypt(row["value"].encode()))
+    reference = json.loads(authority["key_reference"]) if authority["key_reference"] else {}
+    return {**configuration(), **reference,
+            "backend": authority["key_backend"]}
 
 
 def delete_authority_key_material(db, authority):
@@ -70,7 +101,7 @@ def delete_authority_key_material(db, authority):
     fingerprint = public_key_fingerprint(public_key)
     db.execute("INSERT OR IGNORE INTO retired_ca_keys(public_key_sha256) VALUES (?)", (fingerprint,))
     # Preserve other archives before changing the shared provider settings.
-    _archive_revoked_credentials()
+    _archive_authority_credentials()
     saved = configuration()
     reference = json.loads(authority["key_reference"] or "{}")
     fingerprint_matches = saved.get("public_key_sha256") == fingerprint
@@ -120,6 +151,7 @@ def managed_softhsm(config):
 
 def provision_authority_key():
     from key_backends import provision_signer
+    _archive_authority_credentials()
     config = _new_authority_configuration(configuration())
     backend = config["backend"]
     if backend == "software":
@@ -182,7 +214,7 @@ def settings():
     from app import current_authority, get_db
     db = get_db()
     authority = current_authority(db)
-    saved = configuration() if authority else _new_authority_configuration(configuration())
+    saved = _authority_configuration(authority) if authority else _new_authority_configuration(configuration())
     if request.method == "POST":
         from approvals import approval_gate
         approval_response = approval_gate()
@@ -192,7 +224,7 @@ def settings():
             db.execute("BEGIN IMMEDIATE")
             # Re-read under the same lock used by CA creation.
             authority = current_authority(db)
-            saved = configuration() if authority else _new_authority_configuration(configuration())
+            saved = _authority_configuration(authority) if authority else _new_authority_configuration(configuration())
             backend = request.form.get("backend", saved["backend"])
             if authority:
                 if backend != authority["key_backend"]:
@@ -227,6 +259,8 @@ def settings():
                     managed_softhsm(values)
                     initialize_softhsm(values, so_pin)
             _save(values)
+            if authority and backend != "software":
+                persist_authority_key_configuration(db, authority["id"])
             audit_event("key_storage.updated", "settings", detail=backend + (" credentials verified" if authority else " configured"))
             db.commit()
             flash("Key storage saved. The CA key is permanently bound when the CA is initialized." if not authority else "Credentials verified against the existing CA key and saved.", "success")
@@ -234,7 +268,7 @@ def settings():
         except (ValueError, OSError) as exc:
             db.rollback()
             flash(str(exc), "error")
-            saved = configuration() if authority else _new_authority_configuration(configuration())
+            saved = _authority_configuration(authority) if authority else _new_authority_configuration(configuration())
             status = 400
     else:
         status = 200

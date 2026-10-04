@@ -2,21 +2,23 @@
 {% block content %}
 <div class="page-heading">
   <div><span class="eyebrow">Certificate operations</span><h1>Certificate inventory</h1><p>Manage this server's authority, certificate lifecycle, and trust relationships.</p></div>
-  <span class="pill">One current CA per server</span>
+  <span class="pill">{{ 'MultiCA enabled' if multi_ca_enabled else 'One current CA per server' }}</span>
 </div>
 <div class="grid stats-grid">
-  <section class="card stat"><span class="stat-label">Local CA</span><span class="stat-icon">{{ icon('shield') }}</span><strong>{{ 1 if authority else 0 }} / 1</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if block_reason or not authority else '' }}"></span>{{ 'Needs attention' if block_reason else ('Authority initialized' if authority else 'Ready to initialize') }}</span></section>
+  <section class="card stat"><span class="stat-label">Local CAs</span><span class="stat-icon">{{ icon('shield') }}</span><strong>{% if multi_ca_enabled %}{{ local_authorities|length }}{% else %}{{ 1 if authority else 0 }} / 1{% endif %}</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if block_reason or not authority else '' }}"></span>{{ 'Needs attention' if block_reason else ('Default CA selected' if authority else ('Choose a default CA in Settings' if local_authorities else 'Ready to initialize')) }}</span></section>
   <section class="card stat"><span class="stat-label">Certificates</span><span class="stat-icon">{{ icon('audit') }}</span><strong>{{ counts['total'] }}</strong><span class="stat-caption">End-entity certificates issued</span></section>
   <section class="card stat"><span class="stat-label">Expiring in 30 days</span><span class="stat-icon">{{ icon('lock') }}</span><strong>{{ counts['expiring'] }}</strong><span class="stat-caption"><span class="stat-indicator {{ 'warning' if counts['expiring'] else 'neutral' }}"></span>{{ 'Plan certificate renewals' if counts['expiring'] else 'No upcoming expirations' }}</span></section>
   <section class="card stat"><span class="stat-label">Revoked / expired</span><span class="stat-icon">{{ icon('grid') }}</span><strong>{{ counts['revoked'] }} / {{ counts['expired'] }}</strong><span class="stat-caption">Certificate lifecycle status</span></section>
 </div>
 {% include "ca_console.html" %}
-{% if can_manage('admin', 'operator') and authority and authority['role'] == 'issuing' %}
+{% if can_manage('admin', 'operator') and issuing_authorities %}
 <section class="card">
-  <div class="section-heading"><div><h2>Issue certificate</h2><p>Signing authority: <strong>{{ authority['name'] }}</strong>. New certificates use this server's current CA.</p></div><span class="pill">End-entity issuance</span></div>
+  <div class="section-heading"><div><h2>Issue certificate</h2><p>{% if multi_ca_enabled %}Choose the Issuing CA for this certificate.{% else %}Signing authority: <strong>{{ issuing_authorities[0]['name'] }}</strong>.{% endif %}</p></div><span class="pill">End-entity issuance</span></div>
   <form method="post" action="{{ url_for('create_certificate') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
+    {% if multi_ca_enabled %}
+    <label>Issuing CA<select name="authority_id" required>{% for issuer in issuing_authorities %}<option value="{{ issuer['id'] }}" {% if authority and issuer['id'] == authority['id'] %}selected{% endif %}>{{ issuer['name'] }}</option>{% endfor %}</select></label>
+    {% else %}<input type="hidden" name="authority_id" value="{{ issuing_authorities[0]['id'] }}">{% endif %}
     <div class="grid">
       <label>Certificate common name<input name="common_name" required maxlength="64" placeholder="service.corp.example"></label>
       <label>Certificate template<select name="template_id" data-certificate-template required>{% for item in issuance_templates %}<option value="{{ item.id }}" data-default-days="{{ item.default_validity_days }}" data-max-days="{{ item.max_validity_days }}" data-profile="{{ item.profile }}" {% if item.builtin == 'server' %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>

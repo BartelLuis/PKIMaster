@@ -38,6 +38,8 @@ DEFAULT_SETTINGS = {
     "listen_address": "127.0.0.1",
     "https_port": "8443",
     "require_dual_approval": "false",
+    "multi_ca_enabled": "false",
+    "default_authority_id": "",
 }
 ROLES = {"admin", "operator", "auditor"}
 enterprise = Blueprint("enterprise", __name__)
@@ -160,7 +162,7 @@ def _verify_existing_keys(database: Path, secret: str) -> None:
 def get_setting(key: str, default=None):
     row = _db().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     value = row["value"] if row else DEFAULT_SETTINGS.get(key, default)
-    if key in {"allow_key_export", "require_dual_approval"}:
+    if key in {"allow_key_export", "require_dual_approval", "multi_ca_enabled"}:
         return str(value).lower() == "true"
     return value
 
@@ -252,6 +254,27 @@ def _settings_from_form() -> dict[str, str]:
         values[key] = str(value)
     values["allow_key_export"] = "true" if request.form.get("allow_key_export") == "on" else "false"
     values["require_dual_approval"] = "true" if request.form.get("require_dual_approval") == "on" else "false"
+    values["multi_ca_enabled"] = "true" if request.form.get("multi_ca_enabled") == "on" else "false"
+    default_authority_id = request.form.get("default_authority_id", "").strip()
+    if default_authority_id:
+        if not default_authority_id.isascii() or not default_authority_id.isdigit() or len(default_authority_id) > 18:
+            raise ValueError("Select a valid default local CA.")
+        authority = _db().execute(
+            "SELECT 1 FROM authorities WHERE id=? AND revoked_at IS NULL AND state='active'",
+            (int(default_authority_id),),
+        ).fetchone()
+        if authority is None:
+            raise ValueError("The default CA must be an active, non-revoked local authority.")
+    values["default_authority_id"] = default_authority_id
+    local_ca_count = _db().execute("SELECT COUNT(*) FROM authorities WHERE revoked_at IS NULL").fetchone()[0]
+    if values["multi_ca_enabled"] != "true" and local_ca_count > 1:
+        raise ValueError("MultiCA cannot be disabled while multiple local CAs are active. Revoke or delete all but one CA first.")
+    if values["multi_ca_enabled"] == "true" and not values["default_authority_id"] and local_ca_count == 1:
+        only_authority = _db().execute(
+            "SELECT id FROM authorities WHERE revoked_at IS NULL AND state='active'"
+        ).fetchone()
+        if only_authority:
+            values["default_authority_id"] = str(only_authority["id"])
     if values["require_dual_approval"] == "true":
         administrators = _db().execute("""SELECT COUNT(*) FROM users
             WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL AND mfa_secret != ''""").fetchone()[0]
@@ -588,8 +611,12 @@ def settings():
         except ValueError as exc:
             _db().rollback()
             flash(str(exc), "error")
-            return render_template("settings.html", title="Settings"), 400
-    return render_template("settings.html", title="Settings")
+            return render_template("settings.html", title="Settings", authorities=_db().execute(
+                "SELECT id,name,role,state FROM authorities WHERE revoked_at IS NULL ORDER BY id"
+            ).fetchall()), 400
+    return render_template("settings.html", title="Settings", authorities=_db().execute(
+        "SELECT id,name,role,state FROM authorities WHERE revoked_at IS NULL ORDER BY id"
+    ).fetchall())
 
 
 @enterprise.route("/users", methods=["GET", "POST"])

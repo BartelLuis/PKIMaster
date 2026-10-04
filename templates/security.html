@@ -4,7 +4,7 @@
   <p class="eyebrow">Assurance &amp; evidence</p><h2>Security posture</h2>
   <p class="muted">Technical controls for your CA operation. Organizational controls and an independent BSI assessment remain necessary.</p>
   <div class="grid">
-    <div class="stat"><span>Local CA boundary</span><strong>{{ '1 / 1' if authority else '0 / 1' }}</strong></div>
+    <div class="stat"><span>Local CA boundary</span><strong>{% if multi_ca_enabled %}{{ authorities|length }}{% else %}{{ '1 / 1' if authority else '0 / 1' }}{% endif %}</strong></div>
     <div class="stat"><span>MFA-enrolled administrators</span><strong>{{ enrolled_admins }}</strong></div>
     <div class="stat"><span>Verified audit events</span><strong>{{ checkpoint.event_count if checkpoint else 'Failed' }}</strong></div>
   </div>
@@ -13,6 +13,9 @@
   <dt>Independent CA approval</dt><dd>Subordinate certificates require a different administrator to approve the recorded CSR.</dd>
   <dt>Key protection</dt><dd>{{ key_backend_label }}. CA private-key downloads are disabled.</dd>
   <dt>Authentication</dt><dd>Local, LDAP or OIDC first factor, followed by mandatory application TOTP.</dd></dl>
+  {% if multi_ca_enabled %}<h3>Independent local authorities</h3><ul>{% for item in authorities %}
+    <li><a href="{{ url_for('authority_detail', authority_id=item['id']) }}">{{ item['name'] }}</a> — {{ item['role'] }}{% if item['state'] != 'active' %} (pending activation){% endif %}{% if authority and authority['id'] == item['id'] %} (default){% endif %}</li>
+  {% else %}<li>No local authorities initialized.</li>{% endfor %}</ul>{% endif %}
 </section>
 <section class="card"><h2>Audit evidence</h2>
   <p>Archive exports in an independently protected retention system. Compare the checkpoint against earlier exports to detect replacement or rollback. A host administrator with access to the application secrets can rewrite local evidence.</p>

@@ -3,6 +3,7 @@
 <section class="card"><p class="eyebrow">Public trust information</p><h2>CRL &amp; AIA publication</h2>
 <p class="muted">Publish this server's signed revocation list and public CA certificates to a separate distribution server. Clients retrieve them over HTTP(S); PKIMaster uploads them over SFTP.</p>
 <p class="muted">After initializing a replacement CA, configure separate publication URLs and a separate SFTP directory before enabling uploads. Keep the archived CA's CRL and AIA URLs and files available for its existing certificates.</p>
+{% if authorities|length > 1 %}<p class="notice">Automatic SFTP publication is configured for one CA at a time. Select which CA this publisher updates; all other CAs remain downloadable from their CA-specific PKIMaster URLs.</p>{% endif %}
 <div class="grid">
 <div class="stat"><span>Automatic publication</span><strong>{{ 'Enabled' if provider.enabled else 'Disabled' }}</strong></div>
 <div class="stat"><span>Published CRL</span><strong>{{ state.last_published_crl_number or 'Not yet' }}</strong></div>
@@ -16,6 +17,8 @@
 </section>
 <section class="card"><h2>Distribution settings</h2>
 <form method="post" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+{% if authorities %}<label>CA assigned to this publication configuration<select name="authority_id" required>{% for item in authorities %}<option value="{{ item['id'] }}" {% if provider.authority_id|string == item['id']|string %}selected{% endif %}>{{ item['name'] }} — {{ item['role'] }}{% if item['state'] != 'active' %} (pending activation){% endif %}</option>{% endfor %}</select></label>
+{% else %}<p class="muted">Initialize a local CA before assigning the publication target. Connection and URL settings may be saved in advance.</p>{% endif %}
 <fieldset><legend>Public retrieval URLs</legend><div class="form-grid">
 <label>CRL distribution point<input type="url" name="crl_url" value="{{ provider.crl_url }}" placeholder="https://pki.example.net/issuing/ca.crl"></label>
 <label>AIA issuer certificate<input type="url" name="aia_url" value="{{ provider.aia_url }}" placeholder="https://pki.example.net/issuing/ca.cer"></label>

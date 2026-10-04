@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pkimaster"
-version = "0.5.0rc1"
-description = "One current CA per server: web-managed private PKI with MFA, approvals, passkeys, signed backups and Debian APT packaging."
+version = "0.5.0"
+description = "Web-managed private PKI with optional MultiCA mode, MFA, approvals, passkeys, signed backups and Debian APT packaging."
 readme = "README.md"
 requires-python = ">=3.11"
 maintainers = [{name = "PKIMaster maintainers", email = "maintainers@pkimaster.de"}]

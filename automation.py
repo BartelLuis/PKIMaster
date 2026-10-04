@@ -253,9 +253,10 @@ def apply_parent_crls(db, authority, pem):
 
 
 def _sync_parent(db, config):
-    from app import current_authority
-    authority = current_authority(db)
-    if not authority or authority["id"] != config["parent_authority_id"] or authority["state"] != "active" or authority["role"] == "root":
+    from app import get_authority
+    authority = get_authority(config["parent_authority_id"])
+    if (not authority or authority["revoked_at"] or authority["state"] != "active"
+            or authority["role"] == "root"):
         raise AutomationError("The configured parent-CRL owner is no longer the active subordinate CA. Review automation settings.")
     parents = x509.load_pem_x509_certificates(authority["parent_chain_pem"].encode())
     if not 1 <= len(config["parent_urls"]) == len(parents) <= 8:
@@ -269,8 +270,9 @@ def _sync_parent(db, config):
         except ValueError as exc:
             raise AutomationError("A configured parent endpoint did not return a supported CRL.") from exc
     db.execute("BEGIN IMMEDIATE")
-    current = current_authority(db)
-    if not current or current["id"] != authority["id"] or current["certificate_pem"] != authority["certificate_pem"] or current["parent_chain_pem"] != authority["parent_chain_pem"]:
+    current = get_authority(authority["id"])
+    if (not current or current["revoked_at"] or current["certificate_pem"] != authority["certificate_pem"]
+            or current["parent_chain_pem"] != authority["parent_chain_pem"]):
         raise AutomationError("The CA changed while retrieving parent CRLs; retry with its current configuration.")
     apply_parent_crls(db, current, "".join(parts))
     db.commit()

@@ -14,6 +14,7 @@ security = Blueprint("security", __name__)
 @require_roles("admin", "operator", "auditor")
 def overview():
     from app import get_db, authority_block_reason, current_authority
+    from enterprise import get_setting
     db = get_db()
     # Read head and entries in one snapshot while other workers append.
     db.execute("BEGIN")
@@ -23,10 +24,18 @@ def overview():
     except AuditIntegrityError as exc:
         checkpoint, error = {}, str(exc)
     authority = current_authority(db)
+    authorities = db.execute(
+        "SELECT id,name,role,state,revoked_at FROM authorities WHERE revoked_at IS NULL ORDER BY id"
+    ).fetchall()
+    multi_ca_enabled = get_setting("multi_ca_enabled", False)
     legacy = db.execute("SELECT legacy_count FROM audit_state WHERE id=1").fetchone()[0]
     admins = db.execute("SELECT COUNT(*) FROM users WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL").fetchone()[0]
+    block_reason = (authority_block_reason(authority) if authority else
+                    "MultiCA is enabled; select a default CA in Settings." if multi_ca_enabled and authorities else
+                    "No CA initialized.")
     return render_template("security.html", title="Security posture", checkpoint=checkpoint, integrity_error=error,
-                           authority=authority, block_reason=authority_block_reason(authority) if authority else "No CA initialized.",
+                           authority=authority, block_reason=block_reason,
+                           authorities=authorities, multi_ca_enabled=multi_ca_enabled,
                            legacy_events=legacy, enrolled_admins=admins)
 
 

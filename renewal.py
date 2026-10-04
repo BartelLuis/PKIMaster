@@ -54,7 +54,7 @@ def detail(certificate_id):
 
 @renewal.route("/certificates/<int:certificate_id>/renew", methods=["GET", "POST"])
 def renew(certificate_id):
-    from app import (authority_block_reason, crl_distribution_url, current_authority,
+    from app import (authority_block_reason, authority_is_active, crl_distribution_url, current_authority,
                      encrypt_private_key, get_db, issuer_certificate_url)
     from enterprise import audit_event, get_setting
     from key_storage import authority_signing_key
@@ -70,23 +70,42 @@ def renew(certificate_id):
     if successor:
         flash("This certificate already has a successor. Renew the latest certificate in the chain.", "info")
         return redirect(url_for("renewal.detail", certificate_id=successor["id"]))
-    authority = current_authority(db)
+    maximum = int(get_setting("max_leaf_days", 397))
+    authority_id = (request.form.get("authority_id", "").strip() if request.method == "POST"
+                    else str(original["authority_id"]))
+    if not authority_id and request.method == "GET":
+        fallback = current_authority(db)
+        authority_id = str(fallback["id"]) if fallback else ""
+    authority = (current_authority(db, int(authority_id))
+                 if authority_id.isascii() and authority_id.isdigit() and len(authority_id) <= 18 else None)
+    issuing_authorities = [item for item in db.execute(
+        "SELECT * FROM authorities WHERE role='issuing' AND state='active' AND revoked_at IS NULL ORDER BY id"
+    ).fetchall() if authority_is_active(item)]
+    if request.method == "GET" and (
+        authority is None or not any(item["id"] == authority["id"] for item in issuing_authorities)
+    ):
+        authority = issuing_authorities[0] if issuing_authorities else None
+        authority_id = str(authority["id"]) if authority else ""
     blocked = ("Revoked certificates cannot be renewed. Issue a new certificate after resolving the revocation reason."
                if original["revoked_at"] else
-               "An active Issuing CA is required for renewal." if authority is None or authority["role"] != "issuing"
+               "Select an active Issuing CA for renewal." if authority is None or authority["role"] != "issuing"
                else authority_block_reason(authority))
-    maximum = int(get_setting("max_leaf_days", 397))
     values = {"common_name": original["common_name"], "subject_alt_names": original["subject_alt_names"],
               "profile": original["profile"], "validity_days": str(min(397, maximum)),
-              "key_source": "csr", "csr_pem": "", "authority_id": str(authority["id"]) if authority else "",
+              "key_source": "csr", "csr_pem": "", "authority_id": str(authority["id"]) if authority else authority_id,
               "template_id": str(original["template_id"]) if original["template_id"] else ""}
     if request.method == "POST":
         values.update({key: request.form.get(key, "").strip() for key in values})
+        authority_id = values["authority_id"]
+        authority = (current_authority(db, int(authority_id))
+                     if authority_id.isascii() and authority_id.isdigit() and len(authority_id) <= 18 else None)
         try:
+            blocked = ("Revoked certificates cannot be renewed. Issue a new certificate after resolving the revocation reason."
+                       if original["revoked_at"] else
+                       "Select an active Issuing CA for renewal." if authority is None or authority["role"] != "issuing"
+                       else authority_block_reason(authority))
             if blocked:
                 raise ValueError(blocked)
-            if values["authority_id"] != str(authority["id"]):
-                raise ValueError("The current issuing authority changed. Reload the renewal form before continuing.")
             if not values["validity_days"].isascii() or not values["validity_days"].isdigit() or len(values["validity_days"]) > 5:
                 raise ValueError("Enter a valid certificate lifetime.")
             days = int(values["validity_days"])
@@ -136,4 +155,6 @@ def renew(certificate_id):
             flash("The certificate could not be renewed. Reload its details and try again.", "error")
     return render_template("certificate_renew.html", title="Renew certificate", certificate=original,
                            authority=authority, blocked=blocked, values=values, maximum=maximum,
+                           multi_ca_enabled=get_setting("multi_ca_enabled", False),
+                           issuing_authorities=issuing_authorities,
                            issuance_templates=available_templates(db, g.user["role"])), (400 if request.method == "POST" else 200)
