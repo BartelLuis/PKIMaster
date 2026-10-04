@@ -1,6 +1,5 @@
 """Recovery exercises real authentication, encrypted CA material and audit checks."""
 from contextlib import closing
-import hashlib
 import io
 import json
 import os
@@ -97,7 +96,8 @@ class BackupWorkflowTests(unittest.TestCase):
         complete_mfa(self.client, self.app)
         # Archive workflow tests target file/DB integrity. The preceding crypto
         # test exercises the actual 128 MiB KDF; avoid paying that cost per case.
-        patcher = patch("backup._derive_key", side_effect=lambda password, salt: hashlib.sha256(password.encode() + salt).digest())
+        patcher = patch("backup._derive_key",
+                        side_effect=lambda passphrase, salt: (b"\0" if passphrase == PASSPHRASE else b"\1") * 32)
         patcher.start()
         self.addCleanup(patcher.stop)
 
