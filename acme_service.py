@@ -344,9 +344,17 @@ def new_nonce():
 
 def _contacts(payload):
     contacts = payload.get("contact", [])
-    if not isinstance(contacts, list) or len(contacts) > 5 or any(not isinstance(item, str) or not re.fullmatch(r"mailto:[^\s@?]+@[^\s@?]+", item) or len(item) > 260 for item in contacts):
+    if not isinstance(contacts, list) or len(contacts) > 5 or any(not _valid_contact(item) for item in contacts):
         raise AcmeError("invalidContact", "Use up to five mailto email addresses.")
     return contacts
+
+
+def _valid_contact(item):
+    if not isinstance(item, str) or len(item) > 260 or not item.startswith("mailto:"):
+        return False
+    local, separator, domain = item[7:].partition("@")
+    return bool(separator and local and domain and "@" not in domain and
+                not any(character.isspace() or character == "?" for character in item))
 
 
 def _account_json(record):
