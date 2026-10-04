@@ -137,10 +137,11 @@ class MonitoringTransportTests(unittest.TestCase):
         self.assertNotIn("SECRET", str(error.exception))
 
     def test_email_header_injection_and_display_names_are_rejected(self):
-        for value in ("ops@example.net\r\nBcc:other@example.net", "Ops <ops@example.net>", "ops", "", "ops@example.net,other@example.net"):
+        for value in ("ops@example.net\r\nBcc:other@example.net", "Ops <ops@example.net>", "ops", "", "ops@example.net,other@example.net", "!" * 250, "ops@mail..example"):
             with self.subTest(value=value), self.assertRaises(transport.MonitoringError):
                 transport.validate_email(value)
         self.assertEqual(transport.validate_email("ops+alerts@mail.example"), "ops+alerts@mail.example")
+        self.assertEqual(transport.validate_email("ops@mail-example.com"), "ops@mail-example.com")
         with self.assertRaises(transport.MonitoringError):
             transport.validate_email("ops@" + "a" * 240 + "!")
 

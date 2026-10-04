@@ -139,9 +139,23 @@ def http_request(url, *, payload=None, headers=None, limit=MAX_DOWNLOAD):
 
 
 def validate_email(value):
-    if len(value) > 254 or not re.fullmatch(
-            r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*", value):
+    if len(value) > 254:
         raise MonitoringError("Use plain email addresses without display names or line breaks.")
+    local, separator, domain = value.partition("@")
+    local_characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.!#$%&'*+/=?^_`{|}~-"
+    if not separator or not local or not domain or any(char not in local_characters for char in local):
+        raise MonitoringError("Use plain email addresses without display names or line breaks.")
+    if not (domain[0].isascii() and domain[0].isalnum()
+            and domain[-1].isascii() and domain[-1].isalnum()):
+        raise MonitoringError("Use plain email addresses without display names or line breaks.")
+    previous_separator = False
+    for char in domain:
+        if char.isascii() and char.isalnum():
+            previous_separator = False
+        elif char in ".-" and not previous_separator:
+            previous_separator = True
+        else:
+            raise MonitoringError("Use plain email addresses without display names or line breaks.")
     return value
 
 
