@@ -404,6 +404,14 @@ class PKIMasterTestCase(unittest.TestCase):
             certificate.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo),
         )
 
+    def test_rollover_csr_does_not_expose_ca_block_reason_details(self):
+        root = self.create_ca()
+        with patch("app.authority_block_reason", return_value="internal CRL parser details"):
+            response = self.get(f"/authorities/{root['id']}/rollover-csr")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data, b"The Root CA is unavailable for rollover.")
+        self.assertNotIn(b"internal CRL parser details", response.data)
+
     def test_root_rollover_cross_certificate_uses_independent_ca_approval(self):
         old_root = self.create_ca()
         new_root_csr, _ = pki.create_ca_request("Replacement Root", "root")
