@@ -744,7 +744,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             if authority["role"] != "root" or authority["state"] != "active" or authority["revoked_at"]:
                 return Response("A rollover CSR is available only for an active Root CA.", status=409)
             if not authority_is_active(authority):
-                return Response(authority_block_reason(authority), status=409)
+                return Response("The Root CA is unavailable for rollover.", status=409)
             signer = authority_signing_key(authority)
             if isinstance(signer, str):
                 signer = serialization.load_pem_private_key(signer.encode(), password=None)

@@ -140,7 +140,8 @@ def register_begin():
         session["passkey_register_origin"] = origin
         return _options_response(options)
     except (ValueError, RuntimeError) as error:
-        return jsonify(error=str(error)), 400
+        current_app.logger.exception("Passkey registration could not be started")
+        return jsonify(error="The passkey request could not be completed."), 400
 
 
 @passkeys.post("/account/security/passkeys/register/complete")
@@ -185,7 +186,8 @@ def register_complete():
         return jsonify(error="This passkey is already registered."), 400
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError, sqlite3.Error) as error:
         db.rollback()
-        return jsonify(error=str(error) if isinstance(error, ValueError) else "The passkey could not be registered."), 400
+        current_app.logger.exception("Passkey registration could not be completed")
+        return jsonify(error="The passkey could not be registered."), 400
 
 
 @passkeys.post("/account/security/passkeys/remove")
@@ -248,7 +250,8 @@ def authenticate_begin():
         return _options_response(options)
     except (ValueError, RuntimeError) as error:
         db.rollback()
-        return jsonify(error=str(error)), 400
+        current_app.logger.exception("Passkey authentication could not be started")
+        return jsonify(error="The passkey request could not be completed."), 400
 
 
 @passkeys.post("/mfa/passkeys/authenticate/complete")

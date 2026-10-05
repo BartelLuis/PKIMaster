@@ -66,6 +66,13 @@ class PasskeyTests(unittest.TestCase):
             self.assertTrue(server._verify(self.base_url))
             self.assertFalse(server._verify("https://attacker.example"))
 
+    def test_registration_begin_does_not_expose_exception_details(self):
+        with patch("passkeys._server", side_effect=RuntimeError("internal WebAuthn details")):
+            response = self._post(self.client, "/account/security/passkeys/register/begin", {})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json["error"], "The passkey request could not be completed.")
+        self.assertNotIn("internal WebAuthn details", response.get_data(as_text=True))
+
     def test_binary_option_fields_are_encoded_for_json(self):
         options = {"publicKey": {
             "challenge": b"\x00\xff",
@@ -106,6 +113,19 @@ class PasskeyTests(unittest.TestCase):
             self.assertEqual(AttestedCredentialData(bytes(row["credential_data"])).credential_id,
                              credential.credential_id)
 
+    def test_registration_complete_does_not_expose_exception_details(self):
+        begin = self._post(self.client, "/account/security/passkeys/register/begin", {})
+        self.assertEqual(begin.status_code, 200, begin.data)
+        code, counter = self._totp()
+        with patch("mfa.time_counter", return_value=counter), patch("passkeys._server") as server:
+            server.return_value.register_complete.side_effect = ValueError("internal WebAuthn details")
+            result = self._post(self.client, "/account/security/passkeys/register/complete", {
+                "credential_json": "{}", "label": "Laptop", "totp_code": code,
+            })
+        self.assertEqual(result.status_code, 400)
+        self.assertEqual(result.json["error"], "The passkey could not be registered.")
+        self.assertNotIn("internal WebAuthn details", result.get_data(as_text=True))
+
     def test_passkey_is_offered_after_password_only_login_when_registered(self):
         credential = self._credential()
         with self.app.app_context():
@@ -127,6 +147,12 @@ class PasskeyTests(unittest.TestCase):
         self.assertEqual(begin.status_code, 200, begin.data)
         self.assertEqual(begin.json["rpId"], "localhost")
         self.assertEqual(begin.json["userVerification"], "required")
+        with patch("passkeys._server", side_effect=RuntimeError("internal WebAuthn details")):
+            failed = client.post("/mfa/passkeys/authenticate/begin", base_url=self.base_url,
+                                 data={"csrf_token": self._token(client, "/mfa/challenge")})
+        self.assertEqual(failed.status_code, 400)
+        self.assertEqual(failed.json["error"], "The passkey request could not be completed.")
+        self.assertNotIn("internal WebAuthn details", failed.get_data(as_text=True))
 
     def test_passkey_assertion_completes_second_factor_and_consumes_counter(self):
         credential = self._credential()
