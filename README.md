@@ -12,6 +12,20 @@ PKIMaster is a private PKI for Debian 13, installed as an APT package and config
 
 **BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
 
+## New in 0.6.0
+
+Initial administrator setup is now available directly at
+**https://SERVER-IP:8443/setup**, without an SSH tunnel. Fresh installations
+listen on all IPv4 interfaces (`0.0.0.0`); upgrades preserve saved listener
+addresses and ports. Remote setup requires direct HTTPS and retains CSRF,
+same-origin checks, one-time administrator creation and mandatory MFA enrollment.
+Backup recovery remains localhost-only.
+
+**Before setup, anyone with network access can create the first administrator.**
+Restrict port 8443 to your management network with a firewall before starting
+the service, and verify the bootstrap certificate fingerprint before entering
+credentials. There is no setup code or default password.
+
 ## New in 0.5.0
 
 Version 0.5.0 is the stable release of the tested release-candidate features,
@@ -121,14 +135,14 @@ The source limits trust to this repository's key using `Signed-By` and stays on 
 
 ```sh
 apt list --all-versions pkimaster
-apt download pkimaster=0.5.0-1
+apt download pkimaster=0.6.0-1
 ```
 
-Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.5.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.5.0/pkimaster_0.5.0-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
+Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.6.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.6.0/pkimaster_0.6.0-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.5.0-1_all.deb
+sudo apt install ./pkimaster_0.6.0-1_all.deb
 ```
 
 To build from source, run the following from a checkout on Debian 13 (the build runs the application tests):
@@ -137,20 +151,29 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-dnspython python3-fido2 python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.4.0-1_all.deb
+sudo apt install ./dist/pkimaster_0.6.0-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. Both installation methods resolve dependencies using your configured Debian repositories.
 
-The service initially listens on **https://127.0.0.1:8443** and generates its own local HTTPS certificate. For a remote machine, connect through an SSH tunnel:
+On a fresh installation, the service listens on **all IPv4 interfaces on port 8443**
+and generates a self-signed bootstrap HTTPS certificate. Open
+**https://SERVER-IP:8443/setup** directly in your browser; no SSH tunnel is required.
+The bootstrap certificate is for localhost, so remote browsers report both an
+untrusted issuer and a hostname mismatch. Before accepting it or entering
+credentials, verify its SHA-256 fingerprint through a trusted server console:
 
 ```sh
-ssh -L 8443:127.0.0.1:8443 administrator@pki-server
+sudo openssl x509 -in /var/lib/pkimaster/server-tls/bootstrap.pem -noout -fingerprint -sha256
 ```
 
-Open **https://localhost:8443/setup** in your browser. The initial certificate is self-signed, so the browser will ask you to trust it. Use a local connection or an SSH connection to a server whose host key you have verified for initial setup.
+**Restrict network access with a firewall before starting the service.** Until
+the first administrator exists, anyone who can reach the setup page can claim
+the installation. Setup has no additional code. Remote plaintext HTTP and
+forwarded headers claiming HTTPS do not bypass the HTTPS requirement. Local
+setup remains possible; backup restore still requires localhost or an SSH tunnel.
 
-Create the first administrator and organization through the setup page. There are no default credentials. Setup accepts only loopback connections and closes permanently after the first administrator is created. All users must enroll a SHA-256 TOTP authenticator (six digits, 30 seconds) before accessing the PKI. Scan the enrollment QR code or copy the complete `otpauth://` URI into your authenticator, including Bitwarden, so it uses the correct algorithm and settings. Then open **Account security** and generate recovery codes with a fresh authenticator code. Store the codes separately: they are shown once, and each can be used once after your normal sign-in to enroll a replacement authenticator.
+Create the first administrator and organization through the setup page. There are no default credentials. Setup closes permanently after the first administrator is created. All users must enroll a SHA-256 TOTP authenticator (six digits, 30 seconds) before accessing the PKI. Scan the enrollment QR code or copy the complete `otpauth://` URI into your authenticator, including Bitwarden, so it uses the correct algorithm and settings. Then open **Account security** and generate recovery codes with a fresh authenticator code. Store the codes separately: they are shown once, and each can be used once after your normal sign-in to enroll a replacement authenticator.
 For later accounts, the creating administrator receives a short-lived setup key and must transfer it to the user over a separate protected channel; a password-authenticated browser cannot retrieve it.
 
 ## Web-only configuration
@@ -163,7 +186,7 @@ Use **Authentication** to select local accounts, LDAP (LDAPS or mandatory StartT
 
 Use **Key storage** before initializing the CA to choose encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault. SoftHSM tokens can be initialized through the browser. Azure supports software-backed RSA and hardware-backed RSA-HSM, with an exact key version and public-key fingerprint pinned to the CA. Credentials are encrypted and can be replaced after proving access to the same key. The provider cannot be changed for an existing CA, and a provider outage never falls back to a software key.
 
-The listener initially binds to loopback. To enable remote access, upload a trusted server certificate and matching unencrypted PEM key, then choose the server's IP address or `0.0.0.0`/`::` and an unprivileged port (1024–65535). The packaged service applies listener and TLS changes automatically within a few seconds; reconnect at the saved address and port. Firewall and DNS administration remain part of the host/network deployment.
+Fresh installations bind to `0.0.0.0`; upgrades do not change an existing listener. Upload a trusted server certificate and matching unencrypted PEM key, then choose the server's IP address or `0.0.0.0`/`::` and an unprivileged port (1024–65535). Use `127.0.0.1` or `::1` if you prefer local access only. The packaged service applies listener and TLS changes automatically within a few seconds; reconnect at the saved address and port. Firewall and DNS administration remain part of the host/network deployment.
 
 Use **CRL & AIA publication** to configure public CRL and issuer-certificate URLs and an optional **SFTP destination**. PKIMaster pushes `ca.crl` (DER), `ca.cer` (DER) and `chain.pem` into a dedicated remote directory. The destination web server serves these public files over HTTP(S); SFTP is the upload transport. Pin the SSH host key and use a dedicated password or SSH key, stored encrypted through the browser. No CA private keys leave the signing provider. See the [SFTP setup and operating guide](docs/PUBLICATION.md).
 

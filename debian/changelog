@@ -1,3 +1,14 @@
+pkimaster (0.6.0-1) trixie; urgency=medium
+
+  * Allow initial administrator setup directly over remote HTTPS without a tunnel.
+  * Listen on all IPv4 interfaces by default for fresh installations.
+  * Preserve saved listener addresses and ports across upgrades and setup.
+  * Keep CSRF, same-origin checks, single-use setup and mandatory MFA enrollment.
+  * Reject remote plaintext setup, including spoofed forwarded HTTPS headers.
+  * Keep backup recovery restricted to localhost and document bootstrap risks.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Wed, 14 Oct 2026 23:45:01 +0200
+
 pkimaster (0.5.0-1) trixie; urgency=medium
 
   * Publish the stable 0.5.0 release with the tested release-candidate features.

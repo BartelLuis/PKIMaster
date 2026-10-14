@@ -49,7 +49,7 @@ class PackagedRuntimeTests(unittest.TestCase):
     def test_web_listener_settings_are_persisted_and_validated(self):
         with closing(sqlite3.connect(self.state / "pkimaster.sqlite")) as db, db:
             db.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        self.assertEqual(read_listener(self.state), ("127.0.0.1", 8443))
+        self.assertEqual(read_listener(self.state), ("0.0.0.0", 8443))
         with closing(sqlite3.connect(self.state / "pkimaster.sqlite")) as db, db:
             db.executemany("INSERT INTO settings VALUES (?, ?)", [("listen_address", "::1"), ("https_port", "9443")])
         self.assertEqual(read_listener(self.state), ("::1", 9443))
@@ -62,6 +62,14 @@ class PackagedRuntimeTests(unittest.TestCase):
             db.execute("UPDATE settings SET value='example.com' WHERE key='listen_address'")
         with self.assertRaises(ValueError):
             read_listener(self.state)
+
+    def test_fresh_runtime_listens_remotely_and_upgrade_preserves_saved_loopback(self):
+        runtime_application(self.state)
+        self.assertEqual(read_listener(self.state), ("0.0.0.0", 8443))
+        with closing(sqlite3.connect(self.state / "pkimaster.sqlite")) as db, db:
+            db.execute("UPDATE settings SET value='127.0.0.1' WHERE key='listen_address'")
+        runtime_application(self.state)
+        self.assertEqual(read_listener(self.state), ("127.0.0.1", 8443))
 
     def test_rejected_listener_is_audited_without_overwriting_a_newer_save(self):
         from app import create_app

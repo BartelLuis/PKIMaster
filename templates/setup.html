@@ -3,8 +3,9 @@
 <section class="card">
   <div class="auth-symbol">{{ icon('shield') }}</div><span class="eyebrow">Initial configuration</span>
   <h1>Set up your PKI</h1>
-  <p>Create your first administrator and configure your organization. Initial setup is available only through a localhost connection.</p>
-  <p>Already have a backup? <a href="{{ url_for('backup.restore') }}">Restore an existing installation</a> before creating an administrator.</p>
+  <p>Create your first administrator and configure your organization. Remote initial setup is available directly over HTTPS; no SSH tunnel is required.</p>
+  <p class="notice">Before setup, anyone who can reach this service can create the first administrator. Restrict access to your management network with a firewall until setup is complete, and verify the server certificate fingerprint through a trusted channel before entering credentials. Setup closes permanently after the first administrator is created.</p>
+  <p>Already have a backup? <a href="{{ url_for('backup.restore') }}">Restore an existing installation</a> through localhost or an SSH tunnel before creating an administrator. Remote setup does not enable remote backup recovery.</p>
   <form method="post" action="{{ url_for('enterprise.setup') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Organization <input name="organization" value="{{ request.form.get('organization', '') }}" maxlength="200" required autocomplete="organization"></label>

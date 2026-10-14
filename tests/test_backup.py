@@ -205,7 +205,7 @@ class BackupWorkflowTests(unittest.TestCase):
             actions = [row[0] for row in get_db().execute("SELECT action FROM audit_events")]
             self.assertIn("backup.created", actions)
             self.assertIn("backup.restored", actions)
-            self.assertEqual(get_db().execute("SELECT value FROM settings WHERE key='listen_address'").fetchone()[0], "127.0.0.1")
+            self.assertEqual(get_db().execute("SELECT value FROM settings WHERE key='listen_address'").fetchone()[0], "0.0.0.0")
         self.assertEqual((fresh_root / "server-tls" / "bootstrap.pem").read_bytes(), tls)
         self.assertIn((fresh_root / "softhsm" / "tokens").as_posix(), (fresh_root / "softhsm" / "softhsm2.conf").read_text())
         self.assertEqual((fresh_root / "softhsm/tokens/token-123/object.object").read_bytes(), b"opaque managed token material")

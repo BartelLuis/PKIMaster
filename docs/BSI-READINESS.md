@@ -57,7 +57,7 @@ TR-03145-1 section 6.7 addresses role management and separation of responsibilit
 
 ## Browser workflow
 
-1. Install the APT package on each dedicated server. Complete loopback HTTPS setup, then enroll the mandatory authenticator (SHA-256, six digits, 30 seconds). Generate one-use recovery codes in **Account security** and store them separately from the authenticator.
+1. Restrict port 8443 to your management network before installing the APT package on each dedicated server. Fresh installations listen on all IPv4 interfaces; initial setup is available directly over HTTPS without a tunnel or setup code. Anyone with network access can create the first administrator until setup is completed. Verify the bootstrap certificate fingerprint through a trusted channel, complete setup, then enroll the mandatory authenticator (SHA-256, six digits, 30 seconds). Upload a trusted HTTPS identity. Generate one-use recovery codes in **Account security** and store them separately from the authenticator.
 2. Configure optional identity and key providers in the browser using [provider setup](PROVIDERS.md), then initialize the Root on its host. Create at least two separately assigned administrator accounts for subordinate signing. Keep the root offline between approved ceremonies where the deployment policy requires it; arrange separate public certificate/CRL distribution.
 3. Initialize an Intermediate or Issuing CA on its own host. Download its CSR. Submit it to the parent's **Request subordinate CA signing** form. New CA CSRs and certificates omit `pathLenConstraint`; existing limits in parent certificates still constrain the actual CA chain.
 4. A second administrator reviews the recorded role, validity, subject and CSR fingerprint and approves the exact request. Download the resulting certificate and **Parent chain**.
@@ -73,6 +73,14 @@ Revocation alone retains the CA and its history. To delete it, an administrator 
 Deletion also removes the CA's local CRL/AIA and certificate download endpoints. It does not remove previously distributed certificates, files on external publication servers, keys in HSM/Azure providers or backup copies. Retention, external key destruction and continued status distribution must follow the deployment's operating procedures. A new CA using the same display name has a new identity and key.
 
 ## Existing installations and migration
+
+Version 0.6.0 allows initial setup directly over remote HTTPS and defaults fresh
+installations to `0.0.0.0:8443`. Existing saved listener addresses and ports are
+preserved; upgrades do not expose previously loopback-only installations.
+CSRF, same-origin checks, single-use setup and mandatory MFA remain enforced.
+There is no setup code: restrict network access before initialization and
+verify the bootstrap certificate independently. Backup restore remains
+localhost-only.
 
 MultiCA is opt-in and defaults to disabled. When disabled, an existing database with more than one non-revoked local CA is refused at startup. Revoked local CAs can remain as archived history. The startup check **does not delete keys, certificates or audit records**, and does not choose a CA to keep. Enable MultiCA in **Settings** before creating a second local CA; choose an explicit default CA for integrations that do not select one per operation.
 

@@ -69,12 +69,49 @@ class EnterpriseTestCase(unittest.TestCase):
         values.update(updates)
         return values
 
-    def test_setup_requires_loopback_and_rejects_forwarded_spoofing(self):
+    def test_remote_setup_requires_https_and_rejects_forwarded_spoofing(self):
         response = self.client.get("/setup", environ_overrides={"REMOTE_ADDR": "192.0.2.10"}, headers={"X-Forwarded-For": "127.0.0.1"})
         self.assertEqual(response.status_code, 403)
+        response = self.client.get("/setup", base_url="http://pki.example.com",
+                                   environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
+                                   headers={"X-Forwarded-Proto": "https", "Forwarded": "proto=https"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.client.post("/setup", base_url="http://pki.example.com",
+                                         environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
+                                         headers={"X-Forwarded-Proto": "https"}).status_code, 403)
+        self.assertEqual(self.client.get("/setup", base_url="https://pki.example.com",
+                                        environ_overrides={"REMOTE_ADDR": "2001:db8::10"}).status_code, 200)
         self.assertEqual(self.client.get("/healthz", environ_overrides={"REMOTE_ADDR": "192.0.2.10"}).status_code, 200)
         self.assertEqual(self.client.get("/setup", environ_overrides={"REMOTE_ADDR": "::1"}).status_code, 200)
         self.assertEqual(self.client.get("/setup", headers={"Host": "attacker.example"}).status_code, 403)
+
+    def test_remote_https_setup_creates_one_administrator_and_requires_mfa(self):
+        base = "https://pki.example.com:8443"
+        remote = {"REMOTE_ADDR": "192.0.2.10"}
+        page = self.client.get("/setup", base_url=base, environ_overrides=remote)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Restrict access", page.data)
+        token = re.search(rb'name="csrf_token" value="([^"]+)"', page.data).group(1).decode()
+        values = {"csrf_token": token, "username": "admin", "password": self.password,
+                  "password_confirm": self.password, "organization": "Remote Enterprise"}
+        self.assertEqual(self.client.post("/setup", base_url=base, environ_overrides=remote,
+                                         data={**values, "csrf_token": "invalid"}).status_code, 403)
+        self.assertEqual(self.client.post("/setup", base_url=base, environ_overrides=remote,
+                                         data=values, headers={"Origin": "https://attacker.example"}).status_code, 403)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM users").fetchone()[0], 0)
+        response = self.client.post("/setup", base_url=base, environ_overrides=remote,
+                                    data=values, headers={"Origin": base})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.location, "/mfa/enroll")
+        self.assertEqual(self.client.get("/", base_url=base, environ_overrides=remote).location, "/mfa/enroll")
+        self.assertEqual(self.client.get("/setup", base_url=base, environ_overrides=remote).status_code, 404)
+        self.assertEqual(self.client.post("/setup", base_url=base, environ_overrides=remote, data=values).status_code, 404)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM users").fetchone()[0], 1)
+            self.assertEqual(get_setting("listen_address"), "0.0.0.0")
+        complete_mfa(self.client, self.app, base_url=base)
+        self.assertEqual(self.client.get("/", base_url=base, environ_overrides=remote).status_code, 200)
 
     def test_cross_origin_posts_rejected_even_with_csrf(self):
         token = self.csrf()
@@ -93,6 +130,19 @@ class EnterpriseTestCase(unittest.TestCase):
             user = get_db().execute("SELECT * FROM users").fetchone()
             self.assertNotEqual(user["password_hash"], self.password)
             self.assertEqual(user["role"], "admin")
+
+    def test_setup_and_settings_preserve_saved_listener_when_not_submitted(self):
+        with self.app.app_context():
+            db = get_db()
+            db.execute("UPDATE settings SET value='127.0.0.1' WHERE key='listen_address'")
+            db.execute("UPDATE settings SET value='9443' WHERE key='https_port'")
+            db.commit()
+        self.setup_admin()
+        response = self.post("/settings", {"organization": "Updated Enterprise"})
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            self.assertEqual(get_setting("listen_address"), "127.0.0.1")
+            self.assertEqual(get_setting("https_port"), "9443")
 
     def test_setup_rejects_short_password_without_partial_installation(self):
         response = self.post("/setup", {"username": "admin", "password": "short", "password_confirm": "short", "organization": "Example"})

@@ -37,6 +37,10 @@ are limited to 128 MiB and 10,000 state files. Browser backup requires the stand
 ## Recover on a replacement host
 
 1. Install the same or a newer compatible PKIMaster version on a fresh host.
+   Since 0.6.0, fresh installations listen on all IPv4 interfaces for remote
+   administrator setup. Restrict access with a firewall before installation;
+   backup recovery itself remains localhost-only. The destination listener
+   stays unchanged after recovery, so review it before opening network access.
 2. Stop the original installation. Keep only one active copy of a CA identity.
 3. Connect to the replacement host through localhost, for example an SSH tunnel to
    `https://127.0.0.1:8443`. On initial setup, select **Restore an existing

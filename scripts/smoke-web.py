@@ -85,7 +85,7 @@ class Inputs(HTMLParser):
 def wait_for_rejected_listener():
     for _ in range(15):
         values = Inputs(get("/settings")).values
-        if values.get("listen_address") == "127.0.0.1" and values.get("https_port") == "8443":
+        if values.get("listen_address") == "0.0.0.0" and values.get("https_port") == "8443":
             return
         time.sleep(1)
     raise AssertionError("An unavailable listener must revert to the previous web settings.")

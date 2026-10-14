@@ -35,7 +35,7 @@ DEFAULT_SETTINGS = {
     "crl_days": "7",
     "allow_key_export": "false",
     "session_minutes": "30",
-    "listen_address": "127.0.0.1",
+    "listen_address": "0.0.0.0",
     "https_port": "8443",
     "require_dual_approval": "false",
     "multi_ca_enabled": "false",
@@ -246,7 +246,7 @@ def _settings_from_form() -> dict[str, str]:
     values = {"organization": organization, "public_base_url": _validate_public_url(request.form.get("public_base_url", ""))}
     for key, minimum, maximum in (("max_leaf_days", 1, 825), ("crl_days", 1, 30), ("session_minutes", 5, 480), ("https_port", 1024, 65535)):
         try:
-            value = int(request.form.get(key, DEFAULT_SETTINGS[key]))
+            value = int(request.form.get(key, get_setting(key) if key == "https_port" else DEFAULT_SETTINGS[key]))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{key.replace('_', ' ').capitalize()} must be a whole number.") from exc
         if not minimum <= value <= maximum:
@@ -281,7 +281,7 @@ def _settings_from_form() -> dict[str, str]:
         if administrators < 2:
             raise ValueError("Four-eyes approval requires at least two active administrators with MFA enrolled.")
     try:
-        values["listen_address"] = str(ipaddress.ip_address(request.form.get("listen_address", DEFAULT_SETTINGS["listen_address"]).strip()))
+        values["listen_address"] = str(ipaddress.ip_address(request.form.get("listen_address", get_setting("listen_address")).strip()))
     except ValueError as exc:
         raise ValueError("Listen address must be an IPv4 or IPv6 address, such as 127.0.0.1 or 0.0.0.0.") from exc
     return values
@@ -438,8 +438,8 @@ def init_enterprise(app) -> None:
             return None
         installed = _db().execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
         if not installed:
-            if not _local_setup_request():
-                return Response("Initial setup is available only from localhost. Connect through a local browser or an SSH tunnel.", status=403)
+            if not request.is_secure and not _local_setup_request():
+                return Response("Remote initial setup requires a direct HTTPS connection.", status=403)
             if endpoint not in {"enterprise.setup", "backup.restore"}:
                 return redirect(url_for("enterprise.setup"))
         elif endpoint in {"enterprise.setup", "backup.restore"}:

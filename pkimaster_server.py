@@ -103,7 +103,8 @@ def read_listener(instance_path: Path) -> tuple[str, int]:
         values = dict(connection.execute(
             "SELECT key, value FROM settings WHERE key IN ('listen_address', 'https_port')"
         ).fetchall())
-    host = str(ipaddress.ip_address(values.get("listen_address", "127.0.0.1")))
+    from enterprise import DEFAULT_SETTINGS
+    host = str(ipaddress.ip_address(values.get("listen_address", DEFAULT_SETTINGS["listen_address"])))
     port = int(values.get("https_port", "8443"))
     if not 1024 <= port <= 65535:
         raise ValueError("The HTTPS listener port must be between 1024 and 65535.")
