@@ -32,6 +32,19 @@
       <form method="post" action="{{ url_for('enterprise.users') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="change_role">
+        <label>Role
+          <select name="role">
+            <option value="auditor" {{ 'selected' if user.role == 'auditor' else '' }}>Auditor</option>
+            <option value="operator" {{ 'selected' if user.role == 'operator' else '' }}>Operator</option>
+            <option value="admin" {{ 'selected' if user.role == 'admin' else '' }}>Administrator</option>
+          </select>
+        </label>
+        <button class="button-secondary" type="submit">Save role</button>
+      </form>
+      <form method="post" action="{{ url_for('enterprise.users') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
         <input type="hidden" name="action" value="{{ 'deactivate' if user.active else 'activate' }}">
         <button class="button-secondary" type="submit">{{ 'Deactivate' if user.active else 'Activate' }} account</button>
       </form>
@@ -52,9 +65,15 @@
         <button class="button-secondary" type="submit">Issue new authenticator setup key</button>
       </form>
       {% endif %}
+      <form method="post" action="{{ url_for('enterprise.users') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="delete">
+        <button class="danger" type="submit">Delete user</button>
+      </form>
     </div>
   </article>
   {% endfor %}
-  <p class="notice">The last active administrator cannot be deactivated. Deactivating an account immediately revokes its sessions.</p>
+  <p class="notice">The last active administrator cannot be deactivated, demoted, or deleted. Access changes revoke the account's sessions. Users referenced by retained four-eyes approval records cannot be deleted.</p>
 </section>
 {% endblock %}

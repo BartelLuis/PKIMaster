@@ -194,6 +194,53 @@ class EnterpriseTestCase(unittest.TestCase):
         self.assertEqual(self.post("/users", {"action": "deactivate", "user_id": "9" * 100}).status_code, 400)
         self.assertEqual(self.client.get("/audit?before=" + "9" * 100).status_code, 200)
 
+    def test_last_administrator_cannot_be_demoted_or_deleted(self):
+        self.setup_admin()
+        demoted = self.post("/users", {"action": "change_role", "user_id": "1", "role": "auditor"})
+        self.assertEqual(demoted.status_code, 400)
+        self.assertIn(b"last active administrator", demoted.data)
+        deleted = self.post("/users", {"action": "delete", "user_id": "1"})
+        self.assertEqual(deleted.status_code, 400)
+        with self.app.app_context():
+            user = get_db().execute("SELECT role FROM users WHERE id=1").fetchone()
+            self.assertEqual(user["role"], "admin")
+
+    def test_role_change_revokes_sessions_and_user_can_be_deleted(self):
+        self.setup_admin()
+        reader_id = self.create_user()
+        reader = self.login_as("reader")
+        response = self.post("/users", {
+            "action": "change_role", "user_id": str(reader_id), "role": "operator",
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(reader.get("/").location, "/login")
+        with self.app.app_context():
+            user = get_db().execute("SELECT role FROM users WHERE id=?", (reader_id,)).fetchone()
+            self.assertEqual(user["role"], "operator")
+
+        deleted = self.post("/users", {"action": "delete", "user_id": str(reader_id)})
+        self.assertEqual(deleted.status_code, 302)
+        with self.app.app_context():
+            self.assertIsNone(get_db().execute("SELECT id FROM users WHERE id=?", (reader_id,)).fetchone())
+            event = get_db().execute(
+                "SELECT action, detail FROM audit_events WHERE action='user.delete' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(event["detail"], "username=reader; role=operator")
+
+    def test_user_referenced_by_retained_approval_cannot_be_deleted(self):
+        self.setup_admin()
+        reader_id = self.create_user()
+        with self.app.app_context():
+            get_db().execute("""INSERT INTO approval_requests
+                (endpoint, view_args, form_data, file_hashes, requested_by)
+                VALUES ('enterprise.users', '{}', '{}', '{}', ?)""", (reader_id,))
+            get_db().commit()
+        response = self.post("/users", {"action": "delete", "user_id": str(reader_id)})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"retained four-eyes approval records", response.data)
+        with self.app.app_context():
+            self.assertIsNotNone(get_db().execute("SELECT id FROM users WHERE id=?", (reader_id,)).fetchone())
+
     def test_disabling_account_and_password_reset_revoke_existing_sessions(self):
         self.setup_admin()
         reader_id = self.create_user()

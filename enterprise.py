@@ -619,6 +619,22 @@ def settings():
     ).fetchall())
 
 
+def _ensure_admin_can_be_removed(db, user, user_allowed) -> None:
+    if not user["active"] or user["role"] != "admin":
+        return
+    if user_allowed(user):
+        admins = sum(user_allowed(admin) for admin in db.execute(
+            "SELECT * FROM users WHERE role = 'admin' AND active = 1"
+        ))
+        if admins <= 1:
+            raise ValueError("The last active administrator cannot be removed or demoted.")
+    if get_setting("require_dual_approval", False) and user["mfa_secret"]:
+        eligible = db.execute("""SELECT COUNT(*) FROM users
+            WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL AND mfa_secret != ''""").fetchone()[0]
+        if eligible <= 2:
+            raise ValueError("At least two active MFA-enrolled administrators must remain while four-eyes approval is enabled.")
+
+
 @enterprise.route("/users", methods=["GET", "POST"])
 @require_roles("admin")
 def users():
@@ -653,7 +669,8 @@ def users():
                      encrypted_enrollment_secret, int(time.time())))
                 audit_event("user.created", "user", str(cursor.lastrowid), f"username={username}; role={role}")
                 flash(f"Authenticator setup key for {username}: {enrollment_secret}. Transfer it over a separate protected channel; it expires in 10 minutes.")
-            elif action in {"deactivate", "activate", "reset_password", "reset_mfa_enrollment"}:
+            elif action in {"deactivate", "activate", "reset_password", "reset_mfa_enrollment",
+                            "change_role", "delete"}:
                 try:
                     user_id = int(request.form.get("user_id", ""))
                     if not 1 <= user_id <= 9223372036854775807:
@@ -664,16 +681,9 @@ def users():
                 user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
                 if not user:
                     raise ValueError("The user does not exist.")
+                audit_detail = ""
                 if action == "deactivate":
-                    admins = sum(user_allowed(admin) for admin in db.execute("SELECT * FROM users WHERE role = 'admin' AND active = 1"))
-                    if user["active"] and user["role"] == "admin" and user_allowed(user) and admins <= 1:
-                        raise ValueError("The last active administrator cannot be deactivated.")
-                    if (get_setting("require_dual_approval", False) and user["active"]
-                            and user["role"] == "admin" and user["mfa_secret"]):
-                        eligible = db.execute("""SELECT COUNT(*) FROM users
-                            WHERE active=1 AND role='admin' AND mfa_secret IS NOT NULL AND mfa_secret != ''""").fetchone()[0]
-                        if eligible <= 2:
-                            raise ValueError("At least two active MFA-enrolled administrators must remain while four-eyes approval is enabled.")
+                    _ensure_admin_can_be_removed(db, user, user_allowed)
                     db.execute("UPDATE users SET active = 0, session_version = session_version + 1 WHERE id = ?", (user_id,))
                 elif action == "activate":
                     db.execute("UPDATE users SET active = 1, session_version = session_version + 1 WHERE id = ?", (user_id,))
@@ -683,7 +693,7 @@ def users():
                     password = request.form.get("password", "")
                     _validate_password(password)
                     db.execute("UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?", (generate_password_hash(password), user_id))
-                else:
+                elif action == "reset_mfa_enrollment":
                     if user["mfa_secret"]:
                         raise ValueError("An enrolled authenticator cannot be replaced through first-enrollment provisioning.")
                     from mfa import new_enrollment_secret
@@ -692,7 +702,25 @@ def users():
                         session_version = session_version + 1 WHERE id = ?""",
                         (encrypted_enrollment_secret, int(time.time()), user_id))
                     flash(f"Authenticator setup key for {user['username']}: {enrollment_secret}. Transfer it over a separate protected channel; it expires in 10 minutes.")
-                audit_event("user." + action, "user", str(user_id))
+                elif action == "change_role":
+                    role = request.form.get("role", "")
+                    if role not in ROLES:
+                        raise ValueError("Select a valid role.")
+                    if user["role"] != role:
+                        if user["role"] == "admin":
+                            _ensure_admin_can_be_removed(db, user, user_allowed)
+                        db.execute("UPDATE users SET role = ?, session_version = session_version + 1 WHERE id = ?",
+                                   (role, user_id))
+                        audit_detail = f"username={user['username']}; role={user['role']}->{role}"
+                else:
+                    _ensure_admin_can_be_removed(db, user, user_allowed)
+                    retained_approvals = db.execute("""SELECT COUNT(*) FROM approval_requests
+                        WHERE requested_by = ? OR reviewed_by = ?""", (user_id, user_id)).fetchone()[0]
+                    if retained_approvals:
+                        raise ValueError("This user is referenced by retained four-eyes approval records and cannot be deleted.")
+                    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+                    audit_detail = f"username={user['username']}; role={user['role']}"
+                audit_event("user." + action, "user", str(user_id), audit_detail)
             else:
                 raise ValueError("Unknown user action.")
             db.commit()

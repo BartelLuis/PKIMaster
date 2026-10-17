@@ -12,6 +12,13 @@ PKIMaster is a private PKI for Debian 13, installed as an APT package and config
 
 **BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
 
+## New in 0.7.0
+
+Administrators can now change user roles or delete user accounts directly from
+**Users & access**. Role changes revoke existing sessions immediately. The last
+active administrator cannot be demoted or deleted, and users referenced by
+retained four-eyes approval records cannot be removed.
+
 ## New in 0.6.0
 
 Initial administrator setup is now available directly at
@@ -135,14 +142,14 @@ The source limits trust to this repository's key using `Signed-By` and stays on 
 
 ```sh
 apt list --all-versions pkimaster
-apt download pkimaster=0.6.0-1
+apt download pkimaster=0.7.0-1
 ```
 
-Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.6.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.6.0/pkimaster_0.6.0-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
+Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.7.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.7.0/pkimaster_0.7.0-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.6.0-1_all.deb
+sudo apt install ./pkimaster_0.7.0-1_all.deb
 ```
 
 To build from source, run the following from a checkout on Debian 13 (the build runs the application tests):
@@ -151,7 +158,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-dnspython python3-fido2 python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.6.0-1_all.deb
+sudo apt install ./dist/pkimaster_0.7.0-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. Both installation methods resolve dependencies using your configured Debian repositories.

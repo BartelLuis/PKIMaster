@@ -1,3 +1,11 @@
+pkimaster (0.7.0-1) trixie; urgency=medium
+
+  * Allow administrators to change user roles and delete user accounts.
+  * Prevent removal of the last active administrator and revoke sessions after role changes.
+  * Retain users referenced by immutable four-eyes approval history.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Sat, 17 Oct 2026 13:01:36 +0200
+
 pkimaster (0.6.0-1) trixie; urgency=medium
 
   * Allow initial administrator setup directly over remote HTTPS without a tunnel.
