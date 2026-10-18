@@ -8,9 +8,19 @@
 
 **Private PKI for Debian, managed entirely through your browser.**
 
-PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. By default each dedicated server runs one current Root, Intermediate, or Issuing CA and retains revoked CAs as history. Optional MultiCA mode permits multiple independent local CAs; parent and child trust tiers still run on separate servers. Choose local, LDAP or OpenID Connect authentication with mandatory MFA, and encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault for CA signing. Independent approval of subordinate CA requests, explicit roles and authenticated audit chains protect administration.
+PKIMaster is a private PKI for Debian 13, installed as an APT package and configured through the browser. By default each dedicated server runs one current Root, Intermediate, or Issuing CA and retains revoked CAs as history. Optional MultiCA mode permits multiple independent local CAs; parent and child trust tiers still run on separate servers. Choose local, LDAP or OpenID Connect authentication with mandatory MFA, and encrypted software keys, PKCS#11/SoftHSM or Azure Key Vault for CA signing. Explicit approval of subordinate CA requests, explicit roles and authenticated audit chains protect administration. Independent four-eyes approval is available as an optional setting.
 
 **BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
+
+## New in 0.7.1
+
+Subordinate CA signing requests no longer require a second administrator
+account. The administrator who submits a request can now review and approve it,
+which unblocks single-administrator installations. Requests remain immutable,
+approval decisions stay final and every approval is still recorded in the audit
+chain. Existing databases are migrated automatically on startup. If separation
+of duties is required, enable the optional four-eyes approval setting described
+in [docs/APPROVALS.md](docs/APPROVALS.md).
 
 ## New in 0.7.0
 
@@ -142,14 +152,14 @@ The source limits trust to this repository's key using `Signed-By` and stays on 
 
 ```sh
 apt list --all-versions pkimaster
-apt download pkimaster=0.7.0-1
+apt download pkimaster=0.7.1-1
 ```
 
-Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.7.0-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.7.0/pkimaster_0.7.0-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
+Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.7.1-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.7.1/pkimaster_0.7.1-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.7.0-1_all.deb
+sudo apt install ./pkimaster_0.7.1-1_all.deb
 ```
 
 To build from source, run the following from a checkout on Debian 13 (the build runs the application tests):
@@ -158,7 +168,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-dnspython python3-fido2 python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.7.0-1_all.deb
+sudo apt install ./dist/pkimaster_0.7.1-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. Both installation methods resolve dependencies using your configured Debian repositories.

@@ -476,7 +476,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             audit_event("ca_request.submitted", "ca_request", str(result.lastrowid),
                         fingerprint + ("; rollover=" + (rollover_kind or "") if rollover_kind else ""))
             db.commit()
-            flash("CA request recorded. A different administrator must review and approve it before signing.", "success")
+            flash("CA request recorded. Review and approve it before signing.", "success")
         except (UnsupportedAlgorithm, x509.DuplicateExtension, x509.UnsupportedGeneralNameType):
             db.rollback()
             flash("The CA request contains unsupported cryptographic data or extensions.", "error")
@@ -495,8 +495,6 @@ def create_app(test_config: dict | None = None) -> Flask:
             pending = db.execute("SELECT * FROM ca_requests WHERE id=?", (request_id,)).fetchone()
             if not pending or pending["status"] != "pending":
                 raise ValueError("This CA request is not pending.")
-            if pending["requested_by"] == g.user["id"]:
-                raise ValueError("Four-eyes control: the requester cannot approve their own CA request.")
             authority = get_authority(pending["authority_id"])
             if not authority_is_active(authority):
                 raise ValueError(authority_block_reason(authority))
@@ -798,6 +796,45 @@ def get_db() -> sqlite3.Connection:
     return g.db
 
 
+def _drop_ca_request_self_approval_check(connection: sqlite3.Connection) -> None:
+    """Rebuild ca_requests without the legacy self-approval CHECK; SQLite cannot drop it in place."""
+    definition = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='ca_requests'"
+    ).fetchone()
+    if not definition or "requested_by != reviewed_by" not in definition[0]:
+        return
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DROP TRIGGER IF EXISTS immutable_ca_request")
+        connection.execute("DROP TRIGGER IF EXISTS final_ca_decision")
+        connection.execute("""CREATE TABLE ca_requests_migrated (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, authority_id INTEGER NOT NULL REFERENCES authorities(id),
+          common_name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('intermediate','issuing')),
+          validity_days INTEGER NOT NULL, csr_pem TEXT NOT NULL, fingerprint TEXT NOT NULL UNIQUE,
+          requested_by INTEGER NOT NULL, reviewed_by INTEGER, reviewed_at TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+          issued_id INTEGER REFERENCES issued_authorities(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          rollover_of INTEGER REFERENCES issued_authorities(id) ON DELETE SET NULL,
+          rollover_kind TEXT NOT NULL DEFAULT '',
+          CHECK(status != 'approved' OR (reviewed_by IS NOT NULL AND issued_id IS NOT NULL))
+        )""")
+        connection.execute("""INSERT INTO ca_requests_migrated
+            (id, authority_id, common_name, role, validity_days, csr_pem, fingerprint, requested_by,
+             reviewed_by, reviewed_at, status, issued_id, created_at, rollover_of, rollover_kind)
+            SELECT id, authority_id, common_name, role, validity_days, csr_pem, fingerprint, requested_by,
+                   reviewed_by, reviewed_at, status, issued_id, created_at, rollover_of, rollover_kind
+            FROM ca_requests""")
+        connection.execute("DROP TABLE ca_requests")
+        connection.execute("ALTER TABLE ca_requests_migrated RENAME TO ca_requests")
+        connection.commit()
+    except sqlite3.Error:
+        connection.rollback()
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
 def init_db(app: Flask) -> None:
     connection = sqlite3.connect(app.config["DATABASE"], timeout=30)
     try:
@@ -858,7 +895,7 @@ def init_db(app: Flask) -> None:
               issued_id INTEGER REFERENCES issued_authorities(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
               rollover_of INTEGER REFERENCES issued_authorities(id) ON DELETE SET NULL,
               rollover_kind TEXT NOT NULL DEFAULT '',
-              CHECK(status != 'approved' OR (reviewed_by IS NOT NULL AND requested_by != reviewed_by AND issued_id IS NOT NULL))
+              CHECK(status != 'approved' OR (reviewed_by IS NOT NULL AND issued_id IS NOT NULL))
             );
         """)
         connection.execute("BEGIN IMMEDIATE")
@@ -881,6 +918,8 @@ def init_db(app: Flask) -> None:
                                           ("key_backend", "TEXT NOT NULL DEFAULT 'software'"), ("key_reference", "TEXT NOT NULL DEFAULT ''")):
                     if name not in columns:
                         connection.execute(f"ALTER TABLE authorities ADD COLUMN {name} {declaration}")
+        connection.commit()
+        _drop_ca_request_self_approval_check(connection)
         connection.executescript("""
             BEGIN IMMEDIATE;
             CREATE TRIGGER IF NOT EXISTS immutable_ca_key_binding BEFORE UPDATE OF key_backend, key_reference ON authorities

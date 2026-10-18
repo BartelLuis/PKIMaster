@@ -13,7 +13,7 @@ on one host.
    CA signing** and select the existing active subordinate CA as the rollover
    target. The common name and CA role must match, and the new public key must
    differ.
-3. A different administrator reviews and approves the CSR. The parent issues a
+3. An administrator reviews and approves the CSR. The parent issues a
    replacement certificate and records its link to the predecessor.
 4. Transfer the new certificate and parent chain to the replacement server.
    Verify the trusted Root fingerprint through the existing independent
@@ -36,7 +36,7 @@ does not silently reissue leaf certificates or deploy them to services.
 2. Download **Root rollover CSR** from the new Root CA. It is signed by the new
    Root's private key and does not export key material.
 3. Submit that CSR on the still-active old Root server with **issue an
-   overlapping cross-certificate** selected. A different administrator must
+   overlapping cross-certificate** selected. An administrator must
    approve it. The old Root issues a cross-certificate for the new Root key.
 4. Download the cross-certificate and its parent chain from the old Root server.
    Verify the new Root certificate and cross-certificate share the same public

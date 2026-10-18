@@ -10,7 +10,7 @@
   </div>
   {% if integrity_error %}<p class="notice danger">{{ integrity_error }}</p>{% else %}<p class="notice">Audit chain verified. Records are protected by chained SHA-256 hashes, keyed authentication and append-only database guards.</p>{% endif %}
   <dl><dt>Signing readiness</dt><dd>{{ block_reason or 'CA is active and its required parent status is current.' }}</dd>
-  <dt>Independent CA approval</dt><dd>Subordinate certificates require a different administrator to approve the recorded CSR.</dd>
+  <dt>CA approval workflow</dt><dd>Subordinate certificates require explicit approval of the recorded CSR before signing.</dd>
   <dt>Key protection</dt><dd>{{ key_backend_label }}. CA private-key downloads are disabled.</dd>
   <dt>Authentication</dt><dd>Local, LDAP or OIDC first factor, followed by mandatory application TOTP.</dd></dl>
   {% if multi_ca_enabled %}<h3>Independent local authorities</h3><ul>{% for item in authorities %}

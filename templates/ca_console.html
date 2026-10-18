@@ -108,8 +108,8 @@
 
 {% if can_manage('admin') and authority and authority['role'] != 'issuing' and authority['id'] in active_authority_ids %}
 <section class="card">
-  <div class="section-heading"><div><span class="eyebrow">Approval workflow</span><h2>Request subordinate CA signing</h2></div><span class="pill">Two-person approval</span></div>
-  <p class="muted">Submit a CSR generated on the subordinate CA's own server. A different administrator must review and approve the request. No subordinate private key is generated or stored here.</p>
+  <div class="section-heading"><div><span class="eyebrow">Approval workflow</span><h2>Request subordinate CA signing</h2></div><span class="pill">Approval workflow</span></div>
+  <p class="muted">Submit a CSR generated on the subordinate CA's own server. The request must be reviewed and approved before signing. No subordinate private key is generated or stored here.</p>
   <form method="post" action="{{ url_for('sign_subordinate') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
@@ -127,7 +127,7 @@
     <label class="checkbox-label"><input type="checkbox" name="rollover_kind" value="root_cross_sign"> This is a new Root CA key; issue an overlapping cross-certificate</label>
     <p class="form-hint">Create the new Root CA on its own server first, download its rollover CSR, then submit that CSR here. The old Root signs only a CA certificate; distribute it with the new self-signed Root certificate.</p>
     {% endif %}
-    <button type="submit" {% if block_reason %}disabled{% endif %}>Submit for independent approval</button>
+    <button type="submit" {% if block_reason %}disabled{% endif %}>Submit for approval</button>
   </form>
 </section>
 {% endif %}
@@ -143,13 +143,11 @@
     <p>CSR SHA-256: <span class="mono">{{ entry['fingerprint'] }}</span></p>
     <label>Recorded CSR<textarea rows="6" readonly>{{ entry['csr_pem'] }}</textarea></label>
     {% if entry['status'] == 'pending' and can_manage('admin') and authority and authority['role'] != 'issuing' and entry['authority_id'] == authority['id'] and entry['authority_id'] in active_authority_ids %}
-    {% if entry['requested_by'] != current_user['id'] %}
     <form method="post" action="{{ url_for('approve_subordinate', request_id=entry['id']) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <p>Verify the CSR fingerprint and the requester’s authorization through your established approval procedure.</p>
       <button type="submit" {% if block_reason %}disabled{% endif %}>Approve and sign this CA request</button>
     </form>
-    {% else %}<p class="notice">A different administrator must approve your request.</p>{% endif %}
     <form method="post" action="{{ url_for('reject_subordinate', request_id=entry['id']) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="danger">Reject request</button>

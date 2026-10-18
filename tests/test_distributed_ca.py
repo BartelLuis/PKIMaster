@@ -160,21 +160,19 @@ class DistributedCATests(unittest.TestCase):
         expected = intermediate.get("/crl/1.crl?format=pem").data.decode() + root_crls
         self.assertEqual(self.issuing.records("authorities")[0]["parent_crls_pem"], expected)
 
-    def test_independent_approval_is_required_and_cannot_be_replayed(self):
-        self.assertIn(b"different administrator", self.root.request_child(self.issuing).data)
-        denied = self.root.post("/ca/requests/1/approve")
-        self.assertIn(b"requester cannot approve", denied.data)
+    def test_approval_is_recorded_immutably_and_cannot_be_replayed(self):
+        self.assertIn(b"CA request recorded", self.root.request_child(self.issuing).data)
         self.assertEqual(self.root.records("issued_authorities"), [])
         with self.root.app.app_context():
             with self.assertRaises(sqlite3.IntegrityError):
                 get_db().execute("UPDATE ca_requests SET role='intermediate' WHERE id=1")
             get_db().rollback()
-        approved = self.root.post("/ca/requests/1/approve", client=self.root.reviewer)
+        approved = self.root.post("/ca/requests/1/approve")
         self.assertIn(b"Subordinate CA certificate signed", approved.data)
-        self.assertIn(b"not pending", self.root.post("/ca/requests/1/approve", client=self.root.reviewer).data)
+        self.assertIn(b"not pending", self.root.post("/ca/requests/1/approve").data)
         self.assertEqual(len(self.root.records("issued_authorities")), 1)
         self.assertEqual(len(self.root.records("authorities")), 1)
-        self.assertEqual(self.root.records("ca_requests")[0]["reviewed_by"], 2)
+        self.assertEqual(self.root.records("ca_requests")[0]["reviewed_by"], 1)
 
     def test_pending_ca_and_missing_parent_status_block_issuance(self):
         self.assertIn(b"Awaiting a signed CA", self.issue().data)
