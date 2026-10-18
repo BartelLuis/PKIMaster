@@ -12,6 +12,17 @@ PKIMaster is a private PKI for Debian 13, installed as an APT package and config
 
 **BSI is the target operating baseline, not a certification claim.** See the [BSI readiness matrix and remaining gaps](docs/BSI-READINESS.md) before evaluating production use. Approved hardware selection, complete separation of trusted roles, protected external audit retention and operational certification remain deployment requirements.
 
+## New in 0.7.2
+
+Retrieve parent CRLs directly from the **CRL Distribution Points (CDP)** in the
+signed CA certificate chain. Use **Parent revocation status → Fetch parent CRLs
+via CDP** for a manual refresh, or select certificate CDPs under **Automation**
+for scheduled retrieval. HTTP(S) endpoints can return DER or PEM CRLs;
+alternative locations are tried when a source fails validation or is unavailable.
+Signature, freshness and rollback checks remain enforced, and verified
+revocations permanently disable the local CA. Existing manual URL configurations
+and PEM imports continue to work. See the [automation guide](docs/AUTOMATION.md).
+
 ## New in 0.7.1
 
 Subordinate CA signing requests no longer require a second administrator
@@ -152,14 +163,14 @@ The source limits trust to this repository's key using `Signed-By` and stays on 
 
 ```sh
 apt list --all-versions pkimaster
-apt download pkimaster=0.7.1-1
+apt download pkimaster=0.7.2-1
 ```
 
-Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.7.1-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.7.1/pkimaster_0.7.1-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
+Alternatively, download the `.deb` from [GitHub Releases](https://github.com/BartelLuis/PKIMaster/releases/latest): [`pkimaster_0.7.2-1_all.deb`](https://github.com/BartelLuis/PKIMaster/releases/download/v0.7.2/pkimaster_0.7.2-1_all.deb). Release assets also include `SHA256SUMS` and build metadata. All published release files are also available in the [repository download archive](https://repo.bartel.sh/releases/pkimaster/). From the download directory:
 
 ```sh
 sudo apt update
-sudo apt install ./pkimaster_0.7.1-1_all.deb
+sudo apt install ./pkimaster_0.7.2-1_all.deb
 ```
 
 To build from source, run the following from a checkout on Debian 13 (the build runs the application tests):
@@ -168,7 +179,7 @@ To build from source, run the following from a checkout on Debian 13 (the build 
 sudo apt update
 sudo apt install build-essential debhelper python3 python3-flask python3-cryptography python3-werkzeug gunicorn python3-jwt python3-ldap3 python3-requests python3-asn1crypto python3-paramiko python3-segno python3-dnspython python3-fido2 python3-pykcs11 softhsm2
 sh scripts/build-deb.sh
-sudo apt install ./dist/pkimaster_0.7.1-1_all.deb
+sudo apt install ./dist/pkimaster_0.7.2-1_all.deb
 ```
 
 The package installs a systemd service running as the dedicated `_pkimaster` system user. Python dependencies come from Debian; installation does not run pip or download Python packages. Both installation methods resolve dependencies using your configured Debian repositories.
@@ -211,7 +222,9 @@ New subordinate and end-entity certificates embed the configured CRL distributio
 
 The APT package includes a publication timer that checks every minute. Revocations queue an updated CRL, and enabled publication renews CRLs before expiry even without browser traffic. Uploads use temporary files and atomic replacement, with the CRL replaced last. Failed uploads remain queued with bounded retry delays and visible status; revocation remains committed locally. Automatic publication requires the CA host and signing provider to be online. Offline Roots need scheduled ceremonies before CRL expiry.
 
-Use **Automation** to schedule parent-CRL retrieval, encrypted backups and external audit delivery. Each job has its own interval and last-success/error status. The automation timer checks due jobs every five minutes; failures retry with backoff and appear in Monitoring. Configuration changes and manual runs require a fresh TOTP code. See the [automation guide](docs/AUTOMATION.md) for recovery keys, SFTP setup, retention and trust boundaries.
+Use **Parent revocation status → Fetch parent CRLs via CDP** on the CA details or dashboard to retrieve parent CRLs from the signed certificate chain. Each child certificate supplies its issuer's CRL locations. HTTP(S) retrieval supports DER and PEM, verifies signatures and freshness, and rejects older CRLs. A verified revocation permanently blocks the local CA. Manual PEM import remains available for offline parents or certificates without supported CDP locations.
+
+Use **Automation** to schedule parent-CRL retrieval from certificate CDPs or explicit URLs, encrypted backups and external audit delivery. Existing manually configured parent URLs remain unchanged. Each job has its own interval and last-success/error status. The automation timer checks due jobs every five minutes; failures retry with backoff and appear in Monitoring. Configuration changes and manual network retrieval require a fresh TOTP code. See the [automation guide](docs/AUTOMATION.md) for recovery keys, SFTP setup, retention and trust boundaries.
 
 ## Certificate management
 

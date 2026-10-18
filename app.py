@@ -123,7 +123,7 @@ def split_pem_crl_blocks(pem: str, *, strict: bool = True) -> list[str]:
 
 
 def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
-    """Validate each ancestor's status using an explicitly imported, fresh full CRL."""
+    """Validate each ancestor's status using an imported or retrieved, fresh full CRL."""
     if not pem.strip():
         raise ValueError("Import current signed parent CRLs before using this CA.")
     try:
@@ -158,6 +158,17 @@ def validate_parent_crls(authority: sqlite3.Row, pem: str) -> str:
         return "".join(crl.public_bytes(serialization.Encoding.PEM).decode() for crl in crls)
     except (TypeError, x509.ExtensionNotFound, x509.DuplicateExtension, UnsupportedAlgorithm) as error:
         raise ValueError("Invalid parent CRL bundle.") from error
+
+
+def parent_cdp_status(authority) -> dict:
+    """Describe signed distribution points without making a network request."""
+    from parent_crls import ParentCRLError, parent_crl_sources
+    if not authority or authority["state"] != "active" or authority["role"] == "root" or authority["revoked_at"]:
+        return {"sources": [], "error": ""}
+    try:
+        return {"sources": parent_crl_sources(authority), "error": ""}
+    except ParentCRLError as error:
+        return {"sources": [], "error": str(error)}
 
 
 def crl_distribution_url(authority_id: int) -> str | None:
@@ -252,6 +263,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                                authority=authority, archived_authorities=[item for item in authorities if item["revoked_at"]],
                                local_authorities=local_authorities, multi_ca_enabled=get_setting("multi_ca_enabled", False),
                                block_reason=authority_block_reason(authority) if authority else "",
+                               parent_cdp=parent_cdp_status(authority),
                                ca_requests=db.execute("""SELECT r.*, u.username AS requester, a.name AS authority_name,
                                    old.common_name AS rollover_of_name FROM ca_requests r
                                    LEFT JOIN users u ON u.id=r.requested_by JOIN authorities a ON a.id=r.authority_id
@@ -281,6 +293,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                                child_authorities=children, issued_certificates=certificates,
                                active=authority_is_active(authority), revocation_reasons=REVOCATION_REASONS,
                                block_reason=authority_block_reason(authority),
+                               parent_cdp=parent_cdp_status(authority),
                                deletion_counts=authority_deletion_counts(db, authority_id),
                                key_download_enabled=key_download_enabled())
 
@@ -377,6 +390,49 @@ def create_app(test_config: dict | None = None) -> Flask:
             db.rollback()
             flash(str(error), "error")
         return redirect(url_for("index"))
+
+    @app.post("/ca/parent-crls/fetch")
+    def fetch_parent_crls_cdp() -> Response:
+        approval_response = approval_gate()
+        if approval_response is not None:
+            return approval_response
+        from automation import apply_parent_crls
+        from mfa import MfaReauthenticationError, verify_reauthentication
+        from parent_crls import fetch_parent_crls
+        db = get_db()
+        authority = None
+        try:
+            with publication_lock() as acquired:
+                if not acquired:
+                    raise ValueError("Publication, backup or automation is running. Try again shortly.")
+                db.execute("BEGIN IMMEDIATE")
+                verify_reauthentication(db, request.form.get("totp_code", ""))
+                authority = selected_form_authority(db)
+                if not authority or authority["state"] != "active" or authority["role"] == "root" or authority["revoked_at"]:
+                    raise ValueError("Parent CRLs require an activated subordinate CA.")
+                audit_event("authority.parent_crls_requested", "authority", str(authority["id"]), "cdp")
+                db.commit()
+                # Downloads must not hold SQLite's write lock. Recheck identity
+                # and use the newest cached CRLs for rollback protection below.
+                pem = fetch_parent_crls(authority)
+                db.execute("BEGIN IMMEDIATE")
+                current = get_authority(authority["id"])
+                if (not current or current["state"] != "active" or current["revoked_at"]
+                        or current["certificate_pem"] != authority["certificate_pem"]
+                        or current["parent_chain_pem"] != authority["parent_chain_pem"]):
+                    raise ValueError("The CA changed while retrieving parent CRLs; retry with its current configuration.")
+                revoked = apply_parent_crls(db, current, pem)
+                db.commit()
+            flash("Parent CRLs fetched via CDP. CA signing is blocked." if revoked else
+                  "Parent CRLs fetched via CDP, validated and imported.", "warning" if revoked else "success")
+        except MfaReauthenticationError as error:
+            db.rollback()
+            flash(str(error), "error")
+            return Response(index(), status=error.status_code)
+        except ValueError as error:
+            db.rollback()
+            flash(str(error), "error")
+        return redirect(url_for("authority_detail", authority_id=authority["id"]) if authority else url_for("index"))
 
     @app.post("/ca/parent-crls")
     def update_parent_crls() -> Response:

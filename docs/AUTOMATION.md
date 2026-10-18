@@ -7,10 +7,31 @@ overdue runs and recovery through the existing notification channel.
 
 ## Parent CRLs
 
-For the current activated subordinate CA, configure one HTTP(S) CRL URL for each
-parent, in immediate-issuer-to-root order. Each download is limited to 4 MiB,
-bounded by time, and uses the monitoring transport's DNS/address checks and TLS
-verification. Redirects and compressed responses are rejected.
+For the current activated subordinate CA, select **Certificate distribution
+points (CDP)** to discover the parent CRL URLs from its signed certificate
+chain. This is the default for new automation configurations. The local CA's
+certificate identifies its immediate issuer's CRL; each non-root parent
+certificate identifies the next issuer's CRL. No CDP is needed in the root's
+self-signed certificate. The page shows discovered URLs in issuer-to-root
+order. Saving settings checks the complete set without contacting endpoints.
+At runtime, supported HTTP(S) alternatives for each issuer are tried in order
+until a verified CRL is found. A verified revocation ends fallback for that
+issuer and cannot be replaced by a different endpoint reporting good status.
+
+If the chain lacks supported CDPs, select **Manually configured URLs** and enter
+one HTTP(S) CRL URL per parent, in immediate-issuer-to-root order. Existing
+configurations retain this mode and their URLs after an upgrade. URLs in this
+field are only used in manual mode; switching to CDP uses the certificate chain.
+
+Each download is limited to 4 MiB, bounded by time, and uses the monitoring
+transport's DNS/address checks and TLS verification. Redirects and compressed
+responses are rejected. All parent CRLs are verified and applied together;
+partial downloads leave the stored bundle unchanged.
+
+For a one-time refresh, open the CA's **Parent revocation status** and choose
+**Fetch parent CRLs via CDP**, confirming with a fresh authenticator code. The
+same certificate sources and validation policy apply. Uploading a complete
+parent CRL PEM bundle remains available when automatic retrieval is unsuitable.
 
 Only fresh, signed, full direct CRLs with CRL numbers are accepted. The existing
 parent validation policy is applied to the complete bundle. Older timestamps,
@@ -18,7 +39,8 @@ lower numbers and changed bytes for the same number are refused, including when
 the cached CRL has expired. Expired cached status continues to block signing;
 network failures never turn unknown status into good status. Verified revocation
 of this CA or an ancestor permanently disables the local CA. Configuration is
-bound to its CA ID; creating a replacement CA requires reviewing the URLs.
+bound to its CA ID; creating a replacement CA requires reviewing the source and
+saving the configuration for that CA.
 
 ## Scheduled recovery backups
 

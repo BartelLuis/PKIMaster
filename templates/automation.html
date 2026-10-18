@@ -13,9 +13,13 @@
 <section class="card"><h2>Schedule and destination</h2><form method="post" class="stack" id="automation-settings"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <fieldset><legend>Parent CRL synchronization</legend>
 <label class="check"><input type="checkbox" name="parent_enabled" {% if provider.parent_enabled %}checked{% endif %}> Retrieve and verify parent CRLs automatically</label>
-<p class="muted">For an activated subordinate CA, enter one HTTP(S) URL per ancestor, starting with its immediate issuer and ending with the root. Expired, unsigned and older CRLs are rejected. A verified revocation permanently disables the local CA.</p>
+<p class="muted">For an activated subordinate CA, retrieve its parents' CRLs from the distribution points (CDPs) in the signed certificate chain, or configure their URLs manually. Expired, unsigned and older CRLs are rejected. A verified revocation permanently disables the local CA.</p>
 {% if authority %}<p>Current CA: <strong>{{ authority.name }}</strong> ({{ authority.role }})</p>{% endif %}
-<label>Parent CRL URLs, one per line<textarea name="parent_urls" rows="4" placeholder="https://parent.example/ca.crl">{{ provider.parent_urls|join('\n') }}</textarea></label>
+<label>Parent CRL source<select name="parent_source"><option value="cdp" {% if provider.parent_source == 'cdp' %}selected{% endif %}>Certificate distribution points (CDP)</option><option value="urls" {% if provider.parent_source == 'urls' %}selected{% endif %}>Manually configured URLs</option></select></label>
+{% if parent_authority and parent_authority.id != (authority.id if authority else none) %}<p>Scheduled CA: <strong>{{ parent_authority.name }}</strong>. Saving these settings selects the current CA.</p>{% endif %}
+{% if parent_cdp_sources %}<details><summary>Discovered certificate distribution points</summary><p class="muted">Immediate issuer first, root last. Alternative URLs for the same issuer are tried in order until a verified CRL is found.</p><ol>{% for sources in parent_cdp_sources %}<li>{% for source in sources %}<code>{{ source }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</li>{% endfor %}</ol></details>{% else %}<p class="muted">{{ parent_cdp_error }} Use manually configured URLs when the certificate chain has no supported CDPs.</p>{% endif %}
+<label>Manual parent CRL URLs, one per line<textarea name="parent_urls" rows="4" placeholder="https://parent.example/ca.crl">{{ provider.parent_urls|join('\n') }}</textarea></label>
+<p class="muted">Used only when the source is manually configured URLs. Enter one HTTP(S) URL per ancestor, starting with the immediate issuer and ending with the root.</p>
 <label>Check interval, minutes<input type="number" name="parent_interval_minutes" min="5" max="10080" value="{{ provider.parent_interval_minutes }}" required></label></fieldset>
 
 <fieldset><legend>Encrypted recovery backups</legend>

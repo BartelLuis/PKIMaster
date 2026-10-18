@@ -474,7 +474,7 @@ def init_enterprise(app) -> None:
         if g.user and not (session.get("mfa_verified") is True and g.user["mfa_secret"]) and endpoint not in factor_endpoints:
             return redirect(url_for("mfa.challenge" if g.user["mfa_secret"] else "mfa.enroll"))
         admin_endpoints = {"create_authority", "revoke_authority", "delete_authority", "unlock_private_keys", "enterprise.settings", "enterprise.users",
-                           "activate_authority", "update_parent_crls", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
+                           "activate_authority", "update_parent_crls", "fetch_parent_crls_cdp", "sign_subordinate", "revoke_subordinate", "approve_subordinate", "reject_subordinate",
                            "identity.settings", "key_storage.settings", "security.policy", "publication.settings", "publication.publish_now",
                            "backup.settings", "backup.export", "monitoring.settings", "monitoring.check_now", "approvals.pending", "approvals.reject",
                            "certificate_profiles.manage", "automation.settings", "automation.run_now", "acme_admin.settings",

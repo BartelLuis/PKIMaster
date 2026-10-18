@@ -21,6 +21,7 @@ APPROVABLE_ENDPOINTS = {
     "revoke_subordinate": "Revoke a subordinate CA",
     "delete_authority": "Delete an archived CA",
     "update_parent_crls": "Import parent CRLs",
+    "fetch_parent_crls_cdp": "Fetch parent CRLs via CDP",
     "enterprise.settings": "Change service and certificate settings",
     "enterprise.users": "Change user access or credentials",
     "identity.settings": "Change external authentication settings",

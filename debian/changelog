@@ -1,3 +1,13 @@
+pkimaster (0.7.2-1) trixie; urgency=medium
+
+  * Discover parent CRLs from CDP URLs in the signed CA certificate chain.
+  * Add authenticated browser retrieval and scheduled CDP synchronization.
+  * Verify complete CRL bundles with signature, freshness and rollback checks.
+  * Preserve authenticated revocation, manual URLs and offline PEM imports.
+  * Package the retrieval module and cover permissions, fallback and concurrent updates.
+
+ -- PKIMaster maintainers <maintainers@pkimaster.de>  Mon, 19 Oct 2026 00:11:26 +0200
+
 pkimaster (0.7.1-1) trixie; urgency=medium
 
   * Allow an administrator to approve subordinate CA signing requests they submitted.

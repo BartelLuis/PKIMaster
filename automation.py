@@ -27,7 +27,7 @@ from publication_transports import (PublicationError, SECRET_FIELDS, _PinnedHost
 
 
 automation = Blueprint("automation", __name__)
-DEFAULTS = {"parent_enabled": False, "parent_authority_id": None, "parent_urls": [],
+DEFAULTS = {"parent_enabled": False, "parent_authority_id": None, "parent_source": "cdp", "parent_urls": [],
             "parent_interval_minutes": 60, "backup_enabled": False, "backup_interval_hours": 24,
             "backup_retention": 14, "backup_public_key": "", "audit_enabled": False,
             "audit_interval_minutes": 15, "transport": "sftp", "host": "", "port": 22,
@@ -46,7 +46,12 @@ class AutomationError(ValueError):
 def configuration():
     from app import get_db, private_key_cipher
     row = get_db().execute("SELECT value FROM settings WHERE key='automation_config'").fetchone()
-    return {**DEFAULTS, **json.loads(private_key_cipher().decrypt(row[0].encode()))} if row else dict(DEFAULTS)
+    if row is None:
+        return dict(DEFAULTS)
+    stored = json.loads(private_key_cipher().decrypt(row[0].encode()))
+    # Existing encrypted settings used explicitly configured URLs. An upgrade
+    # must not silently change their source or require newly issued certificates.
+    return {**DEFAULTS, "parent_source": "urls", **stored}
 
 
 def _save(values):
@@ -254,27 +259,39 @@ def apply_parent_crls(db, authority, pem):
 
 def _sync_parent(db, config):
     from app import get_authority
+    from parent_crls import ParentCRLError, fetch_parent_crls
     authority = get_authority(config["parent_authority_id"])
     if (not authority or authority["revoked_at"] or authority["state"] != "active"
             or authority["role"] == "root"):
         raise AutomationError("The configured parent-CRL owner is no longer the active subordinate CA. Review automation settings.")
-    parents = x509.load_pem_x509_certificates(authority["parent_chain_pem"].encode())
-    if not 1 <= len(config["parent_urls"]) == len(parents) <= 8:
-        raise AutomationError("Configure one parent CRL URL per ancestor, ordered immediate issuer to root.")
-    parts = []
-    for url in config["parent_urls"]:
-        content = http_request(url, limit=4 * 1024 * 1024)
+    source = config.get("parent_source", "urls")
+    if source == "cdp":
         try:
-            crl = x509.load_pem_x509_crl(content) if content.lstrip().startswith(b"-----BEGIN") else x509.load_der_x509_crl(content)
-            parts.append(crl.public_bytes(serialization.Encoding.PEM).decode())
-        except ValueError as exc:
-            raise AutomationError("A configured parent endpoint did not return a supported CRL.") from exc
+            pem = fetch_parent_crls(authority)
+        except ParentCRLError as exc:
+            raise AutomationError(str(exc)) from exc
+    elif source == "urls":
+        parents = x509.load_pem_x509_certificates(authority["parent_chain_pem"].encode())
+        if not 1 <= len(config["parent_urls"]) == len(parents) <= 8:
+            raise AutomationError("Configure one parent CRL URL per ancestor, ordered immediate issuer to root.")
+        parts = []
+        for url in config["parent_urls"]:
+            content = http_request(url, limit=4 * 1024 * 1024)
+            try:
+                crl = x509.load_pem_x509_crl(content) if content.lstrip().startswith(b"-----BEGIN") else x509.load_der_x509_crl(content)
+                parts.append(crl.public_bytes(serialization.Encoding.PEM).decode())
+            except ValueError as exc:
+                raise AutomationError("A configured parent endpoint did not return a supported CRL.") from exc
+        pem = "".join(parts)
+    else:
+        raise AutomationError("Select certificate CDPs or manually configured parent CRL URLs.")
     db.execute("BEGIN IMMEDIATE")
     current = get_authority(authority["id"])
-    if (not current or current["revoked_at"] or current["certificate_pem"] != authority["certificate_pem"]
+    if (not current or current["revoked_at"] or current["state"] != "active" or current["role"] != authority["role"]
+            or current["certificate_pem"] != authority["certificate_pem"]
             or current["parent_chain_pem"] != authority["parent_chain_pem"]):
         raise AutomationError("The CA changed while retrieving parent CRLs; retry with its current configuration.")
-    apply_parent_crls(db, current, "".join(parts))
+    apply_parent_crls(db, current, pem)
     db.commit()
     return "", 0
 
@@ -422,6 +439,7 @@ def _integer(form, name, default, minimum, maximum):
 def form_configuration(saved):
     from app import current_authority
     from backup import recipient_public_key
+    from parent_crls import ParentCRLError, parent_crl_sources
     form = request.form
     values = {**saved, "installation_id": saved.get("installation_id") or secrets.token_hex(16)}
     for job in JOBS:
@@ -432,17 +450,28 @@ def form_configuration(saved):
                                    ("backup_retention", 14, 1, 365)):
         values[name] = _integer(form, name, default, low, high)
     values["parent_urls"] = [value.strip() for value in form.get("parent_urls", "").splitlines() if value.strip()]
-    if len(values["parent_urls"]) > 8:
-        raise AutomationError("At most eight parent CRL URLs are supported.")
-    for url in values["parent_urls"]:
-        validate_url(url)
+    # Older forms have no source selector; their entered URLs remain explicit.
+    values["parent_source"] = form.get("parent_source", "urls" if values["parent_urls"] else saved.get("parent_source", "urls"))
+    if values["parent_source"] not in {"cdp", "urls"}:
+        raise AutomationError("Select certificate CDPs or manually configured parent CRL URLs.")
+    if values["parent_source"] == "urls":
+        if len(values["parent_urls"]) > 8:
+            raise AutomationError("At most eight parent CRL URLs are supported.")
+        for url in values["parent_urls"]:
+            validate_url(url)
     if values["parent_enabled"]:
         authority = current_authority()
-        if not authority or authority["state"] != "active" or authority["role"] == "root":
+        if not authority or authority["revoked_at"] or authority["state"] != "active" or authority["role"] == "root":
             raise AutomationError("Parent CRL synchronization requires an activated subordinate CA.")
-        parents = x509.load_pem_x509_certificates(authority["parent_chain_pem"].encode())
-        if not 1 <= len(parents) == len(values["parent_urls"]):
-            raise AutomationError("Provide one CRL URL per parent, ordered immediate issuer to root.")
+        if values["parent_source"] == "cdp":
+            try:
+                parent_crl_sources(authority)
+            except ParentCRLError as exc:
+                raise AutomationError(str(exc)) from exc
+        else:
+            parents = x509.load_pem_x509_certificates(authority["parent_chain_pem"].encode())
+            if not 1 <= len(parents) == len(values["parent_urls"]):
+                raise AutomationError("Provide one CRL URL per parent, ordered immediate issuer to root.")
         values["parent_authority_id"] = authority["id"]
     public_pem = form.get("backup_public_key", "").strip()
     values["backup_public_key"] = recipient_public_key(public_pem)[0] if public_pem else ""
@@ -474,17 +503,28 @@ def form_configuration(saved):
 
 
 def _page(status=200):
-    from app import current_authority, get_db
+    from app import current_authority, get_authority, get_db
     from backup import provenance_fingerprint, recipient_public_key
+    from parent_crls import ParentCRLError, parent_crl_sources
     config = configuration()
     public = {key: value for key, value in config.items() if key not in SECRET_FIELDS}
     fingerprint = recipient_public_key(config["backup_public_key"])[1] if config["backup_public_key"] else ""
     jobs = {row["name"]: dict(row) for row in get_db().execute("SELECT * FROM automation_jobs")}
     checksum = jobs["backup"]["last_object"].rsplit("-", 1)[-1].removesuffix(".pkibackup")
     checksum = checksum if re.fullmatch(r"[0-9a-f]{64}", checksum) else ""
+    authority = current_authority()
+    parent_authority = get_authority(config["parent_authority_id"]) if config["parent_enabled"] and config["parent_authority_id"] else authority
+    cdp_sources, cdp_error = [], "Parent CRL discovery requires an activated subordinate CA."
+    if parent_authority is not None:
+        try:
+            cdp_sources = parent_crl_sources(parent_authority)
+            cdp_error = ""
+        except ParentCRLError as exc:
+            cdp_error = str(exc)
     return render_template("automation.html", title="Automation", provider=public,
                            credential_stored=bool(config.get("password") or config.get("private_key_pem")),
-                           fingerprint=fingerprint, authority=current_authority(),
+                           fingerprint=fingerprint, authority=authority, parent_authority=parent_authority,
+                           parent_cdp_sources=cdp_sources, parent_cdp_error=cdp_error,
                            backup_checksum=checksum, provenance_fingerprint=provenance_fingerprint(),
                            jobs=jobs), status
 

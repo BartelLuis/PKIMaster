@@ -1,0 +1,28 @@
+<details {% if block_reason %}open{% endif %}><summary>Parent revocation status</summary>
+  <p>Retrieve the signed full CRL for each parent from the CRL Distribution Points (CDP) in this CA's certificate chain. Missing, expired or revoked parent status blocks signing.</p>
+  {% if parent_cdp.sources %}
+  <ol class="detail-list">
+    {% for urls in parent_cdp.sources %}
+    <li><strong>{{ 'Immediate issuer' if loop.first else 'Ancestor ' ~ loop.index }}</strong>{% for location in urls %}<div class="mono">{{ location }}</div>{% endfor %}</li>
+    {% endfor %}
+  </ol>
+  <form method="post" action="{{ url_for('fetch_parent_crls_cdp') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
+    <label>Fresh authenticator code<input name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
+    <button type="submit">Fetch parent CRLs via CDP</button>
+  </form>
+  {% elif parent_cdp.error %}
+  <p class="notice notice-warning">{{ parent_cdp.error }}</p>
+  {% endif %}
+  <p><a href="{{ url_for('automation.settings') }}">Configure scheduled parent CRL retrieval</a>. You can also configure explicit URLs there when a certificate has no supported CDP.</p>
+  <details><summary>Import parent CRLs manually</summary>
+    <p>Paste one current signed full CRL per parent, immediate issuer first and root last.</p>
+    <form method="post" action="{{ url_for('update_parent_crls') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
+      <label>Parent CRLs (PEM)<textarea name="parent_crls_pem" rows="6" required></textarea></label>
+      <button type="submit">Validate and import parent CRLs</button>
+    </form>
+  </details>
+</details>

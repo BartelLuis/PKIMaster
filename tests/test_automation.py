@@ -181,15 +181,128 @@ class AutomationTests(unittest.TestCase):
         with self.app.app_context():
             return dict(get_db().execute("SELECT * FROM authorities ORDER BY id DESC LIMIT 1").fetchone())
 
-    def activate(self):
+    def activate(self, *, crl_url=None, parent_source="urls"):
         with patch("pki.generate_private_key", return_value=self.key):
             self.post("/authorities", {"name": "Automation CA", "common_name": "Automation CA", "role": "issuing", "validity_days": "90"})
         authority = self.authority()
-        signed = pki.sign_ca_request(authority["csr_pem"], "issuing", 90, "root", self.parent[0], self.parent[1])
+        signed = pki.sign_ca_request(authority["csr_pem"], "issuing", 90, "root", self.parent[0], self.parent[1], crl_url=crl_url)
         fingerprint = x509.load_pem_x509_certificate(self.parent[0].encode()).fingerprint(hashes.SHA256()).hex()
         self.post("/ca/activate", {"certificate_pem": signed[0], "chain_pem": self.parent[0], "trusted_root_sha256": fingerprint})
-        self.configure(parent_enabled=True, parent_authority_id=authority["id"], parent_urls=["https://parent.example/crl"])
+        self.configure(parent_enabled=True, parent_authority_id=authority["id"], parent_source=parent_source,
+                       parent_urls=["https://parent.example/crl"])
         return self.authority()
+
+    def test_new_configuration_defaults_to_cdp_without_network_on_page(self):
+        with self.app.app_context():
+            self.assertEqual(automation.configuration()["parent_source"], "cdp")
+        with patch("monitoring_transports.http_request") as http:
+            response = self.client.get("/settings/automation", base_url=self.base)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'value="cdp" selected', response.data)
+        http.assert_not_called()
+
+    def test_encrypted_legacy_configuration_and_older_forms_keep_manual_urls(self):
+        authority = self.activate()
+        with self.app.app_context():
+            legacy = automation.configuration()
+            legacy.pop("parent_source")
+            automation._save(legacy)
+            get_db().commit()
+            self.assertEqual(automation.configuration()["parent_source"], "urls")
+        crl = pki.build_crl(self.parent[0], self.parent[1], [], 1, 7)
+        with patch("automation.http_request", return_value=crl) as http:
+            self.assertEqual(self.cycle()["status"], "checked")
+        http.assert_called_once_with("https://parent.example/crl", limit=4 * 1024 * 1024)
+        with self.app.test_request_context("/settings/automation", method="POST", data={
+                "parent_enabled": "on", "parent_urls": "https://legacy.example/parent.crl"}):
+            parsed = automation.form_configuration(dict(automation.DEFAULTS))
+        self.assertEqual(parsed["parent_source"], "urls")
+        self.assertEqual(parsed["parent_urls"], ["https://legacy.example/parent.crl"])
+        self.assertEqual(parsed["parent_authority_id"], authority["id"])
+
+    def test_cdp_configuration_discovers_chain_without_fetching_or_validating_unused_manual_urls(self):
+        authority = self.activate(crl_url="https://parent.example/from-certificate.crl")
+        with self.app.test_request_context("/settings/automation", method="POST", data={
+                "parent_enabled": "on", "parent_source": "cdp", "parent_urls": "unused invalid URL"}), \
+                patch("monitoring_transports.http_request") as http:
+            parsed = automation.form_configuration(dict(automation.DEFAULTS))
+        http.assert_not_called()
+        self.assertEqual(parsed["parent_source"], "cdp")
+        self.assertEqual(parsed["parent_authority_id"], authority["id"])
+        with patch("monitoring_transports.http_request") as http:
+            response = self.client.get("/settings/automation", base_url=self.base)
+        self.assertIn(b"https://parent.example/from-certificate.crl", response.data)
+        http.assert_not_called()
+
+    def test_parent_source_and_selected_manual_urls_are_validated(self):
+        for source, urls, error in (("unrecognized", "", automation.AutomationError),
+                                    ("urls", "file:///parent.crl", MonitoringError)):
+            with self.subTest(source=source), self.app.test_request_context(
+                    "/settings/automation", method="POST", data={"parent_source": source, "parent_urls": urls}):
+                with self.assertRaises(error):
+                    automation.form_configuration(dict(automation.DEFAULTS))
+
+    def test_missing_cdp_prevents_enable_and_reports_failed_run_without_network(self):
+        authority = self.activate()
+        with self.app.test_request_context("/settings/automation", method="POST", data={
+                "parent_enabled": "on", "parent_source": "cdp"}), patch("monitoring_transports.http_request") as http:
+            with self.assertRaisesRegex(automation.AutomationError, "no CRL distribution points"):
+                automation.form_configuration(dict(automation.DEFAULTS))
+        http.assert_not_called()
+        self.configure(parent_enabled=True, parent_source="cdp", parent_authority_id=authority["id"])
+        with patch("monitoring_transports.http_request") as http:
+            self.assertEqual(self.cycle()["status"], "failed")
+        http.assert_not_called()
+        self.assertIn("no CRL distribution points", self.state("parent")["last_error"])
+        self.assertEqual(self.authority()["parent_crls_pem"], "")
+
+    def test_cdp_sync_uses_certificate_source_and_keeps_rollback_and_revocation_policy(self):
+        authority = self.activate(crl_url="https://parent.example/from-certificate.crl", parent_source="cdp")
+        first = pki.build_crl(self.parent[0], self.parent[1], [], 2, 7)
+        with patch("monitoring_transports.http_request", return_value=first) as http, patch("automation.http_request") as manual:
+            self.assertEqual(self.cycle()["status"], "checked")
+        http.assert_called_once_with("https://parent.example/from-certificate.crl", limit=4 * 1024 * 1024)
+        manual.assert_not_called()
+        saved = self.authority()["parent_crls_pem"]
+        older = pki.build_crl(self.parent[0], self.parent[1], [], 1, 7)
+        with patch("monitoring_transports.http_request", return_value=older):
+            self.assertEqual(self.cycle(force=True)["status"], "failed")
+        self.assertEqual(self.authority()["parent_crls_pem"], saved)
+        self.assertIn("rollback", self.state("parent")["last_error"])
+        revocations = [{"serial_number": authority["serial_number"], "revoked_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+                        "revocation_reason": "ca_compromise"}]
+        revoked = pki.build_crl(self.parent[0], self.parent[1], revocations, 3, 7)
+        with patch("monitoring_transports.http_request", return_value=revoked):
+            self.assertEqual(self.cycle(force=True)["status"], "checked")
+        self.assertIsNotNone(self.authority()["revoked_at"])
+        self.assertNotEqual(self.authority()["parent_crls_pem"], saved)
+
+    def test_cdp_sync_rechecks_authority_after_fetching(self):
+        self.activate(crl_url="https://parent.example/from-certificate.crl", parent_source="cdp")
+        crl = pki.build_crl(self.parent[0], self.parent[1], [], 1, 7)
+
+        def revoked_during_fetch(*args, **kwargs):
+            get_db().execute("UPDATE authorities SET revoked_at=?", (datetime.now(UTC).isoformat(),))
+            get_db().commit()
+            return crl
+
+        with patch("monitoring_transports.http_request", side_effect=revoked_during_fetch):
+            self.assertEqual(self.cycle()["status"], "failed")
+        self.assertIn("changed while retrieving", self.state("parent")["last_error"])
+        self.assertEqual(self.authority()["parent_crls_pem"], "")
+
+    def test_cdp_transport_failure_preserves_bundle_and_sanitizes_job_status(self):
+        self.activate(crl_url="https://parent.example/from-certificate.crl", parent_source="cdp")
+        crl = pki.build_crl(self.parent[0], self.parent[1], [], 1, 7)
+        with patch("monitoring_transports.http_request", return_value=crl):
+            self.assertEqual(self.cycle()["status"], "checked")
+        saved = self.authority()["parent_crls_pem"]
+        with patch("monitoring_transports.http_request", side_effect=MonitoringError("private remote response")):
+            self.assertEqual(self.cycle(force=True)["status"], "failed")
+        self.assertEqual(self.authority()["parent_crls_pem"], saved)
+        self.assertNotIn("private remote response", self.state("parent")["last_error"])
+        self.assertIn("parent 1", self.state("parent")["last_error"])
+        self.assertGreater(self.state("parent")["next_attempt_at"], time.time())
 
     def test_disabled_jobs_do_not_contact_network(self):
         with patch("automation.http_request") as http, patch("automation._sftp") as sftp:

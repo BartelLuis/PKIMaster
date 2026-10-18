@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pkimaster"
-version = "0.7.1"
+version = "0.7.2"
 description = "Web-managed private PKI with optional MultiCA mode, MFA, approvals, passkeys, signed backups and Debian APT packaging."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,7 +31,7 @@ pkcs11 = ["PyKCS11>=1.5.17,<2"]
 pkimaster-dev = "app:main"
 
 [tool.setuptools]
-py-modules = ["app", "approvals", "enterprise", "identity", "mfa", "passkeys", "pki", "key_backends", "key_storage", "audit_integrity", "security", "publication", "publication_transports", "publication_worker", "backup", "renewal", "monitoring", "monitoring_transports", "monitoring_worker", "certificate_profiles", "inventory", "tls_monitoring", "automation", "automation_worker", "acme_service", "scep_est", "pkimaster_server", "wsgi"]
+py-modules = ["app", "approvals", "enterprise", "identity", "mfa", "passkeys", "pki", "key_backends", "key_storage", "audit_integrity", "security", "publication", "publication_transports", "publication_worker", "backup", "renewal", "monitoring", "monitoring_transports", "monitoring_worker", "certificate_profiles", "inventory", "tls_monitoring", "automation", "automation_worker", "parent_crls", "acme_service", "scep_est", "pkimaster_server", "wsgi"]
 
 [tool.setuptools.data-files]
 "share/pkimaster/templates" = ["templates/*.html"]

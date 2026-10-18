@@ -12,7 +12,7 @@ cd "$repository"
 cp -R app.py approvals.py enterprise.py identity.py mfa.py passkeys.py pki.py key_backends.py key_storage.py audit_integrity.py security.py \
     publication.py publication_transports.py publication_worker.py backup.py renewal.py \
     monitoring.py monitoring_transports.py monitoring_worker.py certificate_profiles.py inventory.py tls_monitoring.py \
-    automation.py automation_worker.py acme_service.py scep_est.py pkimaster_server.py wsgi.py pyproject.toml \
+    automation.py automation_worker.py parent_crls.py acme_service.py scep_est.py pkimaster_server.py wsgi.py pyproject.toml \
     MANIFEST.in README.md docs templates static tests debian scripts "$workspace/source/"
 find "$workspace/source" -type f -exec chmod 0644 {} +
 chmod 0755 "$workspace/source/debian/rules" "$workspace/source/debian/postinst" "$workspace/source/debian/postrm"

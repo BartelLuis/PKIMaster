@@ -26,16 +26,8 @@
     <button type="submit">Validate and import CA certificate</button>
   </form>
   {% endif %}
-  {% if can_manage('admin') and authority['state'] == 'active' and authority['role'] != 'root' %}
-  <details {% if block_reason %}open{% endif %}><summary>Parent revocation status</summary>
-    <p>Import a current, signed full CRL from every parent server, immediate issuer first and root last. Missing, expired, or revoked parent status blocks issuance. Re-import before the CRLs expire.</p>
-    <form method="post" action="{{ url_for('update_parent_crls') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="authority_id" value="{{ authority['id'] }}">
-      <label>Parent CRLs (PEM)<textarea name="parent_crls_pem" rows="6" required></textarea></label>
-      <button type="submit">Validate and import parent CRLs</button>
-    </form>
-  </details>
+  {% if can_manage('admin') and authority['state'] == 'active' and authority['role'] != 'root' and not authority['revoked_at'] %}
+  {% include "parent_crls.html" %}
   {% endif %}
   {% elif can_manage('admin') and not (multi_ca_enabled and local_authorities) %}
   <p>Initialize a CA on this server. Choose a Root CA, or generate a CSR for an Intermediate or Issuing CA whose parent runs on another server. In MultiCA mode, enable the feature in Settings before adding additional independent local CAs.</p>
