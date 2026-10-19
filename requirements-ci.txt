@@ -5,5 +5,5 @@ build==1.6.1
 check-jsonschema==0.38.2
 coverage==7.16.2
 pip-audit==2.10.1
-ruff==0.16.10
+ruff==0.17.1
 twine==7.0.0
