@@ -2,8 +2,8 @@
 # Dependabot maintains these pins together with the Python project manifest.
 acme==5.8.0
 build==1.6.1
-check-jsonschema==0.38.2
-coverage==7.16.2
+check-jsonschema==0.39.0
+coverage==7.17.0
 pip-audit==2.10.1
-ruff==0.16.10
+ruff==0.17.3
 twine==7.0.0
