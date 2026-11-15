@@ -419,6 +419,8 @@ def _authorize(protocol, identifier, secret):
     try:
         valid_secret = check_password_hash(row["secret_hash"], secret)
     except ValueError:
+        valid_secret = False
+    if not valid_secret:
         # Backward compatibility for legacy SHA-256 credential hashes.
         valid_secret = hmac.compare_digest(row["secret_hash"], hashlib.sha256(secret.encode("utf-8")).hexdigest())
     if not valid_secret:
