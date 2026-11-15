@@ -329,9 +329,13 @@ class PKIMasterTestCase(unittest.TestCase):
         with self.app.app_context():
             pending = dict(get_db().execute("SELECT * FROM approval_requests").fetchone())
             secret_hashes = json.loads(pending["secret_hashes"])
-            secret_hash = hmac.new(
-                self.app.config["KEY_ENCRYPTION_SECRET"].encode(), password.encode(), hashlib.sha256
-            ).hexdigest()
+            secret_hash = hashlib.scrypt(
+                password.encode(),
+                salt=self.app.config["KEY_ENCRYPTION_SECRET"].encode(),
+                n=2**14,
+                r=8,
+                p=1,
+            ).hex()
             self.assertEqual(secret_hashes, {"password": [secret_hash]})
             self.assertNotIn(password, pending["form_data"])
 
