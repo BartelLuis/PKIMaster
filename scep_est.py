@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.x509.oid import NameOID
 from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.security import check_password_hash
 
 from enterprise import audit_event, get_setting, require_roles
 
@@ -413,7 +414,14 @@ def _authorize(protocol, identifier, secret):
     row = _db().execute("""SELECT * FROM enrollment_credentials
         WHERE id=? AND protocol=? AND revoked=0 AND used_at IS NULL AND expires>?""",
         (identifier, protocol, _stamp())).fetchone()
-    if not row or not hmac.compare_digest(row["secret_hash"], hashlib.sha256(secret.encode("utf-8")).hexdigest()):
+    if not row:
+        raise ValueError("Enrollment credential is invalid, expired, used or revoked.")
+    try:
+        valid_secret = check_password_hash(row["secret_hash"], secret)
+    except ValueError:
+        # Backward compatibility for legacy SHA-256 credential hashes.
+        valid_secret = hmac.compare_digest(row["secret_hash"], hashlib.sha256(secret.encode("utf-8")).hexdigest())
+    if not valid_secret:
         raise ValueError("Enrollment credential is invalid, expired, used or revoked.")
     return row
 
