@@ -13,6 +13,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.x509.oid import NameOID
+from werkzeug.security import generate_password_hash
 
 import scep_est
 from app import create_app, encrypt_private_key, get_db
@@ -303,6 +304,10 @@ class ScepEstTests(unittest.TestCase):
             self.assertNotEqual(row["secret_hash"], secret)
             self.assertIsNone(db.execute("SELECT used_at FROM enrollment_credentials WHERE id=?",
                                          (row["id"],)).fetchone()["used_at"])
+            db.execute("UPDATE enrollment_credentials SET secret_hash=? WHERE id=?",
+                       (generate_password_hash(secret), row["id"]))
+            db.commit()
+            self.assertEqual(scep_est._authorize("est", "credential-test-123", secret)["id"], row["id"])
             db.execute("UPDATE enrollment_credentials SET revoked=1 WHERE id=?", (row["id"],))
             db.commit()
             with self.assertRaises(ValueError):
