@@ -21,7 +21,7 @@ dependencies = [
   "segno>=1.6.6,<2",
   "fido2>=1.2,<3",
   "dnspython>=2.7,<3",
-  "gunicorn>=23,<27; platform_system != 'Windows'",
+  "gunicorn>=23,<28; platform_system != 'Windows'",
 ]
 
 [project.optional-dependencies]
