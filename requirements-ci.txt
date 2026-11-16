@@ -3,7 +3,7 @@
 acme==5.9.0
 build==1.6.1
 check-jsonschema==0.39.0
-coverage==7.17.0
+coverage==7.17.3
 pip-audit==2.10.1
-ruff==0.17.3
+ruff==0.17.5
 twine==7.0.0
